@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Spark
+checkpoints/
+spark-warehouse/
+derby.log
+metastore_db/
+
+# Data (downloaded/derived; see data/README.md)
+data/raw/
+data/*.csv
+!data/sample_comments.csv
+
+# Model caches
+.cache/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+
+# Env & tools
+.env
+.tools/
+
+# Misc
+*.log
+.DS_Store
