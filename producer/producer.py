@@ -67,6 +67,8 @@ def build_message(row: dict, index: int, source: str) -> bytes:
         "text": text,
         "label": pick(row, LABEL_COLUMNS) or None,
         "ts": datetime.now(timezone.utc).isoformat(),
+        "post_id": pick(row, ["post_id", "POST_ID"]) or None,
+        "post_title": pick(row, ["post_title", "POST_TITLE", "title"]) or None,
     }
     return json.dumps(payload).encode("utf-8")
 

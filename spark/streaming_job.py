@@ -43,6 +43,8 @@ RAW_SCHEMA = (
     .add("text", T.StringType())
     .add("label", T.StringType())
     .add("ts", T.StringType())
+    .add("post_id", T.StringType())
+    .add("post_title", T.StringType())
 )
 
 VADER_SCHEMA = T.StructType([
@@ -105,11 +107,13 @@ def upsert_comments(batch_df, _batch_id: int) -> None:
             r["id"], r["source"], r["author"], r["text"], r["cleaned_text"], r["label"],
             r["vader_label"], r["vader_score"], r["vader_positive"], r["vader_negative"],
             r["vader_neutral"], r["bert_label"], r["bert_score"], r["event_ts"],
+            r["post_id"], r["post_title"],
         )
         for r in batch_df.select(
             "id", "source", "author", "text", "cleaned_text", "label",
             "vader_label", "vader_score", "vader_positive", "vader_negative",
             "vader_neutral", "bert_label", "bert_score", "event_ts",
+            "post_id", "post_title",
         ).collect()
     ]
     if not rows:
@@ -124,7 +128,7 @@ def upsert_comments(batch_df, _batch_id: int) -> None:
             """
             INSERT INTO comments (id, source, author, text, cleaned_text, label,
                 vader_label, vader_score, vader_positive, vader_negative,
-                vader_neutral, bert_label, bert_score, ts)
+                vader_neutral, bert_label, bert_score, ts, post_id, post_title)
             VALUES %s
             ON CONFLICT (id) DO UPDATE SET
                 vader_label = EXCLUDED.vader_label,
@@ -256,6 +260,7 @@ def main() -> None:
                 F.struct(
                     "id", "source", "author", "text", "cleaned_text", "label",
                     "vader_label", "vader_score", "bert_label", "bert_score", "ts",
+                    "post_id", "post_title",
                 )
             ).alias("value")
         )

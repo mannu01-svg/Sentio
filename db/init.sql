@@ -2,9 +2,9 @@
 -- Created automatically on first postgres container start.
 
 CREATE TABLE IF NOT EXISTS comments (
-    id             VARCHAR(64) PRIMARY KEY,
+    id             TEXT PRIMARY KEY,
     source         VARCHAR(32)  NOT NULL,
-    author         VARCHAR(128),
+    author         TEXT,
     text           TEXT         NOT NULL,
     cleaned_text   TEXT,
     label          VARCHAR(16),
@@ -16,12 +16,15 @@ CREATE TABLE IF NOT EXISTS comments (
     bert_label     VARCHAR(16),
     bert_score     DOUBLE PRECISION,
     ts             TIMESTAMP,
+    post_id        TEXT,
+    post_title     TEXT,
     processed_at   TIMESTAMP DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_comments_ts        ON comments (ts);
 CREATE INDEX IF NOT EXISTS idx_comments_source    ON comments (source);
 CREATE INDEX IF NOT EXISTS idx_comments_vader     ON comments (vader_label);
+CREATE INDEX IF NOT EXISTS idx_comments_post      ON comments (post_id);
 
 CREATE TABLE IF NOT EXISTS window_stats (
     window_start  TIMESTAMP NOT NULL,

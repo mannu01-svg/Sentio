@@ -1,4 +1,5 @@
-"""FastAPI service — read endpoints over the processed data in PostgreSQL.
+"""FastAPI service — read endpoints over the processed data in PostgreSQL,
+plus the /api/analyze ingestion trigger for link-based analysis.
 
 Run:
     .venv/bin/uvicorn api.main:app --reload --port 8000
@@ -6,14 +7,23 @@ Docs:
     http://localhost:8000/docs
 """
 
+import csv
+import io
 import os
 import re
+import sys
+import uuid
 from collections import Counter
+from datetime import datetime, timezone
 
 import psycopg2
 import psycopg2.extras
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fetcher"))
 
 PG_CONFIG = {
     "host": os.getenv("PG_HOST", "localhost"),
@@ -124,9 +134,10 @@ def timeline(minutes: int = Query(60, ge=5, le=1440, description="lookback windo
 @app.get("/api/comments")
 def comments(
     limit: int = Query(50, ge=1, le=500),
-    source: str | None = Query(None, description="reddit | youtube | instagram"),
+    source: str | None = Query(None, description="reddit | youtube | instagram | paste"),
     sentiment: str | None = Query(None, description="positive | negative | neutral"),
     q: str | None = Query(None, description="substring search in text"),
+    post_id: str | None = Query(None, description="filter comments of one analyzed post"),
 ):
     """Latest scored comments (live feed) with optional filters."""
     clauses, params = ["1=1"], []
@@ -139,12 +150,15 @@ def comments(
     if q:
         clauses.append("(text ILIKE %s OR cleaned_text ILIKE %s)")
         params += [f"%{q}%", f"%{q}%"]
+    if post_id:
+        clauses.append("post_id = %s")
+        params.append(post_id)
 
     with db() as conn, conn.cursor() as cur:
         cur.execute(
             f"""
             SELECT id, source, author, text, label, vader_label, vader_score,
-                   bert_label, bert_score, ts
+                   bert_label, bert_score, ts, post_id
             FROM comments
             WHERE {' AND '.join(clauses)}
             ORDER BY ts DESC NULLS LAST
@@ -233,4 +247,319 @@ def compare(limit: int = Query(500, ge=10, le=5000)):
         "label_accuracy_vader_pct": round(correct_vader * 100 / len(labeled), 1) if labeled else None,
         "labeled_examples": len(labeled),
         "disagreement_examples": disagreements,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Link analysis (paste a YouTube/Reddit URL -> fetch its comments -> Kafka)
+# ---------------------------------------------------------------------------
+
+class AnalyzeRequest(BaseModel):
+    url: str
+    mode: str = "auto"        # auto | paste
+    limit: int = 100
+    title: str | None = None  # only for paste mode
+
+
+class AnalyzeStatus:
+    """In-memory registry of analyzed posts (last 100)."""
+
+    def __init__(self):
+        self.posts: dict[str, dict] = {}
+
+    def add(self, post_id: str, info: dict):
+        self.posts[post_id] = {**info, "analyzed_at": datetime.now(timezone.utc).isoformat()}
+        if len(self.posts) > 100:
+            oldest = min(self.posts, key=lambda k: self.posts[k]["analyzed_at"])
+            del self.posts[oldest]
+
+
+ANALYZED = AnalyzeStatus()
+
+
+@app.post("/api/analyze")
+def analyze(req: AnalyzeRequest):
+    """Fetch comments for a post URL (or pasted text) and push them into the pipeline."""
+    import fetchers
+    import publisher
+
+    try:
+        result = fetchers.fetch(req.url, mode=req.mode, limit=min(req.limit, 500))
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+    except Exception as exc:
+        return {"status": "error", "message": f"fetch failed: {exc}"}
+
+    if not result["comments"]:
+        return {"status": "error", "message": "No comments found for that post"}
+
+    sent = publisher.publish_comments(result["comments"])
+    ANALYZED.add(result["post_id"], {
+        "post_id": result["post_id"],
+        "post_title": result["post_title"],
+        "source": result["source"],
+        "requested_url": req.url if req.mode != "paste" else None,
+        "comments_fetched": len(result["comments"]),
+        "comments_published": sent,
+    })
+    return {
+        "status": "ok",
+        "post_id": result["post_id"],
+        "post_title": result["post_title"],
+        "source": result["source"],
+        "comments_fetched": len(result["comments"]),
+        "comments_published": sent,
+        "note": "Comments are streaming through Kafka -> Spark; scores appear in ~30-60s. "
+                "Filter the live feed by this post, or check GET /api/posts.",
+    }
+
+
+@app.get("/api/posts")
+def posts():
+    """Analyzed posts (URL/paste ingests) with their live sentiment summary."""
+    out = []
+    with db() as conn, conn.cursor() as cur:
+        for post_id, info in ANALYZED.posts.items():
+            cur.execute(
+                """
+                SELECT count(*) AS total,
+                       count(*) FILTER (WHERE vader_label = 'positive') AS positive,
+                       count(*) FILTER (WHERE vader_label = 'negative') AS negative,
+                       count(*) FILTER (WHERE vader_label = 'neutral')  AS neutral,
+                       avg(vader_score) AS avg_score
+                FROM comments WHERE post_id = %s
+                """,
+                (post_id,),
+            )
+            row = dict(cur.fetchone())
+            total = row["total"] or 0
+            out.append({
+                **info,
+                "scored": total,
+                "sentiment": {
+                    "positive": row["positive"] or 0,
+                    "negative": row["negative"] or 0,
+                    "neutral": row["neutral"] or 0,
+                    "positive_pct": round((row["positive"] or 0) * 100 / total, 1) if total else 0,
+                    "negative_pct": round((row["negative"] or 0) * 100 / total, 1) if total else 0,
+                    "neutral_pct": round((row["neutral"] or 0) * 100 / total, 1) if total else 0,
+                },
+                "avg_vader_score": round(float(row["avg_score"]), 3) if row["avg_score"] is not None else None,
+            })
+    out.sort(key=lambda p: p["analyzed_at"], reverse=True)
+    return {"posts": out, "count": len(out)}
+
+
+# ---------------------------------------------------------------------------
+# Trending velocity: words + hashtags growing fastest (recent vs previous half)
+# ---------------------------------------------------------------------------
+
+HASHTAG_RE = re.compile(r"#\w{2,}")
+
+
+@app.get("/api/trends")
+def trends(limit: int = Query(10, ge=3, le=30)):
+    """Hashtags/words whose mention velocity is rising (recent window vs before)."""
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT cleaned_text, ts,
+                   (ts >= now() - interval '30 minutes') AS recent
+            FROM comments
+            WHERE ts >= now() - interval '60 minutes'
+            """
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+
+    recent_tags, older_tags = Counter(), Counter()
+    recent_words, older_words = Counter(), Counter()
+    for row in rows:
+        text = row["cleaned_text"] or ""
+        tags = set(HASHTAG_RE.findall(text))
+        words_set = {w for w in re.findall(r"[a-z']{3,}", text) if w not in STOPWORDS}
+        if row["recent"]:
+            recent_tags.update(tags)
+            recent_words.update(words_set)
+        else:
+            older_tags.update(tags)
+            older_words.update(words_set)
+
+    def velocity(recent: Counter, older: Counter) -> list[dict]:
+        all_terms = set(recent) | set(older)
+        scored = []
+        for term in all_terms:
+            r, o = recent[term], older[term]
+            growth = (r - o) / max(o, 1)
+            score = r * (1 + max(growth, 0))  # volume-weighted growth
+            scored.append({"term": term, "recent": r, "previous": o, "growth_pct": round(growth * 100, 1), "score": round(score, 2)})
+        scored.sort(key=lambda x: -x["score"])
+        return scored[:limit]
+
+    return {
+        "hashtags": velocity(recent_tags, older_tags),
+        "words": velocity(recent_words, older_words),
+        "recent_window_minutes": 30,
+        "total_recent": sum(recent_tags.values()) + sum(recent_words.values()) // 2,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Negative-spike alert
+# ---------------------------------------------------------------------------
+
+@app.get("/api/alerts")
+def alerts():
+    """Detect a negative-sentiment spike: latest window vs trailing average."""
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT window_start, total, negative, pos_pct, neg_pct, neu_pct
+            FROM window_stats ORDER BY window_start DESC LIMIT 6
+            """
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+
+    if len(rows) < 2:
+        return {"alert": False, "reason": "not enough windows yet"}
+
+    latest, baseline_rows = rows[0], rows[1:]
+    baseline_neg = sum(r["neg_pct"] or 0 for r in baseline_rows) / len(baseline_rows)
+    latest_neg = latest["neg_pct"] or 0
+    jump = latest_neg - baseline_neg
+
+    alert = jump >= 10 and latest["total"] >= 5
+    return {
+        "alert": alert,
+        "latest_window": latest["window_start"].isoformat(),
+        "latest_neg_pct": latest_neg,
+        "baseline_neg_pct": round(baseline_neg, 1),
+        "jump_pct": round(jump, 1),
+        "threshold": "+10 points vs trailing average, min 5 comments",
+        "message": (
+            f"Negative sentiment spiked to {latest_neg}% (baseline {round(baseline_neg, 1)}%, +{round(jump, 1)} pts)"
+            if alert else None
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# CSV export of filtered comments
+# ---------------------------------------------------------------------------
+
+@app.get("/api/export")
+def export_csv(
+    source: str | None = None,
+    sentiment: str | None = None,
+    q: str | None = None,
+    post_id: str | None = None,
+    limit: int = Query(1000, ge=1, le=10000),
+):
+    """Download scored comments (current filters) as CSV."""
+    clauses, params = ["1=1"], []
+    if source:
+        clauses.append("source = %s"); params.append(source)
+    if sentiment:
+        clauses.append("vader_label = %s"); params.append(sentiment)
+    if q:
+        clauses.append("(text ILIKE %s OR cleaned_text ILIKE %s)"); params += [f"%{q}%", f"%{q}%"]
+    if post_id:
+        clauses.append("post_id = %s"); params.append(post_id)
+
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT id, source, author, text, label, vader_label, vader_score,
+                   vader_positive, vader_negative, vader_neutral, bert_label, bert_score, ts
+            FROM comments WHERE {' AND '.join(clauses)}
+            ORDER BY ts DESC NULLS LAST LIMIT %s
+            """,
+            (*params, limit),
+        )
+        rows = cur.fetchall()
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["id", "source", "author", "text", "dataset_label", "vader_label", "vader_score",
+                     "vader_pos", "vader_neg", "vader_neu", "bert_label", "bert_score", "ts"])
+    for row in rows:
+        writer.writerow([c.isoformat() if hasattr(c, "isoformat") else c for c in row])
+    buffer.seek(0)
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=sentiment-export-{stamp}.csv"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Spam/junk heuristic (cheap, explainable — flags promotional junk)
+# ---------------------------------------------------------------------------
+
+SPAM_MARKERS = ("http", "www.", "subscribe", "sub for", "check my", "follow me", "free ",
+                "giveaway", "promo", "discount", "click link", "earn money", "crypto", "dm me")
+URL_RE = re.compile(r"(https?://|www\.)\S+")
+REPEAT_RE = re.compile(r"(.)\1{4,}")  # aaaaa
+
+
+def spam_score(text: str) -> dict:
+    """0..1 heuristic spam likelihood + the reason it was flagged."""
+    t = (text or "").lower()
+    score, reasons = 0.0, []
+    urls = len(URL_RE.findall(t))
+    if urls >= 2:
+        score += 0.4; reasons.append("multiple links")
+    elif urls == 1:
+        score += 0.15; reasons.append("contains link")
+    hits = sum(1 for m in SPAM_MARKERS if m in t)
+    if hits >= 2:
+        score += 0.4; reasons.append("promo phrases")
+    elif hits == 1:
+        score += 0.2; reasons.append("promo phrase")
+    if len(t) > 0 and sum(c.isdigit() for c in t) / len(t) > 0.4:
+        score += 0.2; reasons.append("digit-heavy")
+    if REPEAT_RE.search(t):
+        score += 0.2; reasons.append("repeated chars")
+    if t.isupper() and len(t) > 20:
+        score += 0.2; reasons.append("all caps")
+    return {"spam_score": round(min(score, 1.0), 2), "spam_reasons": reasons, "is_spam": score >= 0.5}
+
+
+@app.get("/api/comments/{comment_id}/spam")
+def comment_spam(comment_id: str):
+    """Spam check for a single stored comment."""
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT text FROM comments WHERE id = %s", (comment_id,))
+        row = cur.fetchone()
+    if not row:
+        return {"error": "not found"}
+    return {"id": comment_id, **spam_score(row["text"])}
+
+
+@app.get("/api/spam")
+def spam_summary(limit: int = Query(500, ge=10, le=5000)):
+    """Spam breakdown across recent comments."""
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, text, source, vader_label FROM comments ORDER BY ts DESC NULLS LAST LIMIT %s",
+            (limit,),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+
+    flagged = []
+    per_source = Counter()
+    for row in rows:
+        check = spam_score(row["text"])
+        if check["is_spam"]:
+            per_source[row["source"]] += 1
+            flagged.append({"id": row["id"], "source": row["source"], "text": row["text"][:120],
+                            "spam_score": check["spam_score"], "reasons": check["spam_reasons"]})
+
+    return {
+        "checked": len(rows),
+        "spam_count": len(flagged),
+        "spam_pct": round(len(flagged) * 100 / len(rows), 1) if rows else 0,
+        "per_source": dict(per_source),
+        "examples": flagged[:10],
     }
