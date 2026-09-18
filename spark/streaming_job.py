@@ -186,6 +186,7 @@ def main() -> None:
         .option("subscribe", "comments-raw")
         .option("startingOffsets", "latest")
         .option("maxOffsetsPerTrigger", 2000)
+        .option("failOnDataLoss", "false")
         .load()
     )
 

@@ -364,6 +364,7 @@ export default function App() {
                   <option value="">All sources</option>
                   <option value="reddit">Reddit</option>
                   <option value="youtube">YouTube</option>
+                  <option value="instagram">Instagram</option>
                 </select>
               </div>
               <div>

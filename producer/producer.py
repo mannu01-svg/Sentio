@@ -57,10 +57,12 @@ def build_message(row: dict, index: int, source: str) -> bytes:
     text = pick(row, TEXT_COLUMNS)
     if not text:
         return b""
+    # per-row source (combined datasets carry a `source` column); CLI flag is fallback
+    row_source = pick(row, ["source"]) or source
     payload = {
         # unique per send: replaying the same dataset must not collide in the sink
-        "id": f"{pick(row, ID_COLUMNS) or source}-{index}",
-        "source": source,
+        "id": f"{pick(row, ID_COLUMNS) or row_source}-{index}",
+        "source": row_source,
         "author": pick(row, AUTHOR_COLUMNS) or "anonymous",
         "text": text,
         "label": pick(row, LABEL_COLUMNS) or None,
@@ -100,7 +102,7 @@ def main() -> None:
                 message = build_message(row, sent, args.source)
                 if not message:
                     continue
-                producer.send(TOPIC, key=f"{args.source}-{sent}", value=message)
+                producer.send(TOPIC, key=f"{row.get('source') or args.source}-{sent}", value=message)
                 sent += 1
                 if sent % 100 == 0:
                     print(f"sent {sent} messages")
