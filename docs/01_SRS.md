@@ -144,6 +144,18 @@ Datasets → Producer → Kafka → Spark Streaming → PostgreSQL + Kafka(score
 ### 3.6 Evaluation
 - **FR-29** `evaluation/evaluate.py` shall compute accuracy, per-class precision/recall/F1, and confusion matrices for both models against dataset labels, from the DB or directly from a CSV.
 
+### 3.7 Link analysis (v2)
+- **FR-30** `POST /api/analyze` shall accept a YouTube video URL, a Reddit thread URL, or pasted comment text (paste mode), fetch the post's comments (yt-dlp / PullPush API / line parser), publish them into `comments-raw` with `post_id` + `post_title`, and return fetch counts.
+- **FR-31** `GET /api/posts` shall list analyzed posts with their live scored count and sentiment split.
+- **FR-32** `/api/comments` shall support a `post_id` filter; dashboard shall offer per-post filtering.
+- **FR-33** Fetched comments shall flow through the same Kafka → Spark → PostgreSQL pipeline (no separate analysis path).
+
+### 3.8 Trending, alerts, spam, export (v2)
+- **FR-34** `GET /api/trends` shall rank hashtags/words by velocity: mentions in the last 30 min vs the previous 30 min.
+- **FR-35** `GET /api/alerts` shall flag a negative spike when the latest window's neg% exceeds the trailing average by ≥ 10 points (min 5 comments).
+- **FR-36** A spam heuristic shall flag promo phrases, multiple links, digit-heavy, repeated-char, and all-caps comments; `GET /api/spam` shall summarize, with per-comment scores.
+- **FR-37** `GET /api/export` shall return filtered scored comments as a CSV download.
+
 ---
 
 ## 4. Non-Functional Requirements

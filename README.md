@@ -5,12 +5,13 @@ Kafka → Spark Structured Streaming → VADER + DistilBERT → PostgreSQL → F
 ![stack](https://img.shields.io/badge/kafka-3.9-black) ![spark](https://img.shields.io/badge/spark-3.5.4-orange) ![python](https://img.shields.io/badge/python-3.12-blue) ![react](https://img.shields.io/badge/react-19-cyan)
 
 ## What it does
-1. **Producer** replays a comments CSV (Reddit/YouTube datasets) into Kafka as a simulated live stream.
-2. **Spark Structured Streaming** consumes, cleans text, scores sentiment with **VADER** (lexicon) and **DistilBERT** (transformer), aggregates 1-minute windows.
-3. **Sinks** write scored comments + window stats to PostgreSQL (idempotent upserts) and a scored JSON feed back to Kafka.
-4. **FastAPI** serves summary / timeline / comments / words / model-comparison endpoints.
-5. **Dashboard** (React + Recharts) polls every 3 s: KPIs, sentiment timeline, distribution, trending words, live feed, VADER-vs-BERT comparison panel.
-6. **Evaluation** scores both models against dataset labels (accuracy, F1, confusion matrices).
+1. **Producer** replays a comments CSV (Reddit/YouTube/Instagram datasets) into Kafka as a simulated live stream.
+2. **Link analysis** — paste a YouTube video or Reddit thread URL in the dashboard: its comments are fetched (yt-dlp / PullPush API) and pushed through the same pipeline (`POST /api/analyze`).
+3. **Spark Structured Streaming** consumes, cleans text, scores sentiment with **VADER** (lexicon) and **DistilBERT** (transformer), aggregates 1-minute windows.
+4. **Sinks** write scored comments + window stats to PostgreSQL (idempotent upserts) and a scored JSON feed back to Kafka.
+5. **FastAPI** serves summary / timeline / comments / words / model-comparison / trends / alerts / spam / posts endpoints + CSV export.
+6. **Dashboard** (React + Recharts) polls: KPIs, sentiment timeline, distribution, trending words + velocity, live feed, VADER-vs-BERT comparison, analyzed-posts panel, spike alerts, spam filter.
+7. **Evaluation** scores both models against dataset labels (accuracy, F1, confusion matrices).
 
 ## Architecture
 ```
