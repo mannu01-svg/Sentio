@@ -24,7 +24,16 @@ CSV → producer.py → Kafka[comments-raw] → Spark streaming
              FastAPI :8000  ←— poll 3s —  React :5173
 ```
 
-## Quickstart
+## Quickstart — one command
+```bash
+./start.sh              # runs everything: docker, spark, producer, api, dashboard
+./start.sh --fast       # skip DistilBERT for a quicker demo
+./start.sh --fresh      # clean state (truncate DB, reset topics)
+./stop.sh               # stop everything (data kept)
+# logs: tail -f logs/spark.log | producer.log | api.log | frontend.log
+```
+
+Manual steps (if you prefer separate terminals):
 ```bash
 # 1. infra: Kafka + Postgres (wait for "healthy")
 docker compose up -d

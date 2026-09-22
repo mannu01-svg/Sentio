@@ -11,6 +11,9 @@ spark-warehouse/
 derby.log
 metastore_db/
 
+# Launcher logs & pids
+logs/
+
 # Data (downloaded/derived; see data/README.md)
 data/raw/
 data/*.csv
