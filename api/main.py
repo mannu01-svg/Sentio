@@ -61,6 +61,111 @@ def db():
     return psycopg2.connect(**PG_CONFIG, cursor_factory=psycopg2.extras.RealDictCursor)
 
 
+# ---------------------------------------------------------------------------
+# Demo auth (college project: any email+password accepted, signed-lite token)
+# ---------------------------------------------------------------------------
+
+import hashlib
+import time as _time
+
+
+def _make_token(email: str) -> str:
+    stamp = str(_time.time())
+    digest = hashlib.sha256(f"{email}:{stamp}:sentio-demo".encode()).hexdigest()[:24]
+    return f"sentio_{digest}_{int(float(stamp))}"
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+    name: str | None = None
+
+
+@app.post("/api/login")
+def login(req: LoginRequest):
+    """Demo auth: accepts any email/password, returns a session token."""
+    email = req.email.strip().lower()
+    if "@" not in email or len(req.password) < 1:
+        return {"status": "error", "message": "Enter a valid email and any password"}
+    name = req.name or email.split("@")[0].replace(".", " ").replace("_", " ").title()
+    return {
+        "status": "ok",
+        "token": _make_token(email),
+        "user": {"email": email, "name": name},
+        "note": "demo authentication — any email/password combination works",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Pipeline monitor: what is streaming right now (powers /pipeline page)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/pipeline")
+def pipeline():
+    """Live pipeline counters: kafka offsets, spark window rate, db rows."""
+    out: dict = {"stages": []}
+
+    # kafka offsets (raw in / scored out)
+    kafka_raw = kafka_scored = None
+    try:
+        import subprocess
+
+        def offset_sum(topic: str) -> int | None:
+            bins = "/opt/kafka/bin"
+            cmd = (
+                f"docker exec sma-kafka {bins}/kafka-get-offsets.sh "
+                f"--bootstrap-server localhost:9092 --topic {topic}"
+            )
+            res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+            if res.returncode != 0:
+                return None
+            total = 0
+            for line in res.stdout.strip().splitlines():
+                try:
+                    total += int(line.rsplit(":", 1)[1])
+                except (ValueError, IndexError):
+                    continue
+            return total
+
+        kafka_raw = offset_sum("comments-raw")
+        kafka_scored = offset_sum("comments-scored")
+    except Exception:
+        pass
+
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT count(*) AS total FROM comments")
+        db_total = cur.fetchone()["total"]
+        cur.execute(
+            """
+            SELECT count(*) AS windows,
+                   coalesce(sum(total), 0) AS windowed_comments,
+                   coalesce(max(total), 0) AS max_window
+            FROM window_stats
+            WHERE window_start >= now() - interval '30 minutes'
+            """
+        )
+        w = dict(cur.fetchone())
+        cur.execute(
+            """
+            SELECT count(*) AS recent FROM comments
+            WHERE processed_at >= now() - interval '1 minute'
+            """
+        )
+        per_min = cur.fetchone()["recent"]
+
+    out["stages"] = [
+        {"name": "Kafka · comments-raw", "detail": "ingestion topic", "value": kafka_raw, "unit": "messages"},
+        {"name": "Kafka · comments-scored", "detail": "scored feed topic", "value": kafka_scored, "unit": "messages"},
+        {"name": "Spark · throughput", "detail": "comments processed last minute", "value": per_min, "unit": "comments/min"},
+        {"name": "Spark · windows", "detail": "1-min windows in last 30 min", "value": w["windows"], "unit": "windows"},
+        {"name": "PostgreSQL · comments", "detail": "scored rows stored", "value": db_total, "unit": "rows"},
+        {"name": "PostgreSQL · windowed", "detail": "comments in recent windows", "value": w["windowed_comments"], "unit": "comments"},
+    ]
+    out["flow_per_min"] = per_min
+    out["max_window"] = w["max_window"]
+    return out
+
+
 @app.get("/health")
 def health():
     try:

@@ -6,6 +6,17 @@ async function get(path) {
   return res.json()
 }
 
+async function post(path, body) {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`${path}: ${res.status}`)
+  return res.json()
+}
+
+// ---- data endpoints ----
 export const fetchSummary = () => get("/api/summary")
 export const fetchTimeline = (minutes = 60) => get(`/api/timeline?minutes=${minutes}`)
 export const fetchComments = ({ limit = 30, source, sentiment, q, post_id } = {}) => {
@@ -22,16 +33,13 @@ export const fetchTrends = (limit = 10) => get(`/api/trends?limit=${limit}`)
 export const fetchAlerts = () => get("/api/alerts")
 export const fetchSpam = (limit = 2000) => get(`/api/spam?limit=${limit}`)
 export const fetchPosts = () => get("/api/posts")
+export const fetchPipeline = () => get("/api/pipeline")
 
-export async function analyzePost({ url, mode = "auto", limit = 100, title }) {
-  const res = await fetch(`${BASE}/api/analyze`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url, mode, limit, title }),
-  })
-  if (!res.ok) throw new Error(`analyze: ${res.status}`)
-  return res.json()
-}
+// ---- actions ----
+export const analyzePost = ({ url, mode = "auto", limit = 100, title }) =>
+  post("/api/analyze", { url, mode, limit, title })
+export const loginRequest = ({ email, password, name }) =>
+  post("/api/login", { email, password, name })
 
 export function exportUrl(filters = {}) {
   const params = new URLSearchParams()
