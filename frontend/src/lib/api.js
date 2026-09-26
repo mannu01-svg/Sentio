@@ -38,8 +38,10 @@ export const fetchPipeline = () => get("/api/pipeline")
 // ---- actions ----
 export const analyzePost = ({ url, mode = "auto", limit = 100, title }) =>
   post("/api/analyze", { url, mode, limit, title })
-export const loginRequest = ({ email, password, name }) =>
-  post("/api/login", { email, password, name })
+export const loginRequest = ({ email, password }) =>
+  post("/api/login", { email, password })
+export const signupRequest = ({ name, email, password }) =>
+  post("/api/signup", { name, email, password })
 
 export function exportUrl(filters = {}) {
   const params = new URLSearchParams()

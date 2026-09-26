@@ -26,6 +26,15 @@ CREATE INDEX IF NOT EXISTS idx_comments_source    ON comments (source);
 CREATE INDEX IF NOT EXISTS idx_comments_vader     ON comments (vader_label);
 CREATE INDEX IF NOT EXISTS idx_comments_post      ON comments (post_id);
 
+-- App accounts (signup / login)
+CREATE TABLE IF NOT EXISTS users (
+    email          TEXT PRIMARY KEY,
+    name           TEXT NOT NULL,
+    password_hash  TEXT NOT NULL,
+    created_at     TIMESTAMP DEFAULT NOW(),
+    last_login     TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS window_stats (
     window_start  TIMESTAMP NOT NULL,
     window_end    TIMESTAMP NOT NULL,

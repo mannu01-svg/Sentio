@@ -1,7 +1,7 @@
 import { Navigate, Route, Routes, useLocation } from "react-router-dom"
 import { useEffect } from "react"
 import { useAuth } from "./lib/auth"
-import Login from "./pages/Login"
+import Auth from "./pages/Auth"
 import Dashboard from "./pages/Dashboard"
 import Live from "./pages/Live"
 import Analyze from "./pages/Analyze"
@@ -27,7 +27,8 @@ export default function App() {
   }, [])
   return (
     <Routes>
-      <Route path="/login" element={<Login />} />
+      <Route path="/login" element={<Auth />} />
+      <Route path="/signup" element={<Auth />} />
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
       <Route path="/live" element={<Protected><Live /></Protected>} />

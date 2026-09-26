@@ -62,37 +62,119 @@ def db():
 
 
 # ---------------------------------------------------------------------------
-# Demo auth (college project: any email+password accepted, signed-lite token)
+# Auth: signup + login backed by the users table in PostgreSQL
 # ---------------------------------------------------------------------------
 
 import hashlib
+import hmac
+import secrets
 import time as _time
+
+PBKDF2_ITERATIONS = 120_000
+
+
+def _hash_password(password: str, salt: str | None = None) -> str:
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), PBKDF2_ITERATIONS)
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt}${digest.hex()}"
+
+
+def _verify_password(password: str, stored: str) -> bool:
+    try:
+        algo, iters, salt, hexdigest = stored.split("$")
+        if algo != "pbkdf2_sha256":
+            return False
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), int(iters))
+        return hmac.compare_digest(digest.hex(), hexdigest)
+    except (ValueError, AttributeError):
+        return False
 
 
 def _make_token(email: str) -> str:
     stamp = str(_time.time())
-    digest = hashlib.sha256(f"{email}:{stamp}:sentio-demo".encode()).hexdigest()[:24]
+    digest = hashlib.sha256(f"{email}:{stamp}:{secrets.token_hex(8)}".encode()).hexdigest()[:24]
     return f"sentio_{digest}_{int(float(stamp))}"
+
+
+class SignupRequest(BaseModel):
+    name: str
+    email: str
+    password: str
 
 
 class LoginRequest(BaseModel):
     email: str
     password: str
-    name: str | None = None
+
+
+def _validate(email: str, password: str, name: str | None = None) -> str | None:
+    if name is not None and not (1 <= len(name.strip()) <= 60):
+        return "Name must be 1-60 characters"
+    if "@" not in email or "." not in email.split("@")[-1]:
+        return "Enter a valid email address"
+    if len(password) < 6:
+        return "Password must be at least 6 characters"
+    return None
+
+
+@app.post("/api/signup")
+def signup(req: SignupRequest):
+    """Create an account (name + email + password) in the users table."""
+    email = req.email.strip().lower()
+    name = req.name.strip()
+    error = _validate(email, req.password, name)
+    if error:
+        return {"status": "error", "message": error}
+    try:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO users (email, name, password_hash)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (email) DO UPDATE
+                SET name = EXCLUDED.name, password_hash = EXCLUDED.password_hash
+                RETURNING email, name
+                """,
+                (email, name, _hash_password(req.password)),
+            )
+            row = cur.fetchone()
+    except psycopg2.Error as exc:
+        return {"status": "error", "message": f"Could not create account: {exc}"}
+    return {
+        "status": "ok",
+        "token": _make_token(email),
+        "user": {"email": row["email"], "name": row["name"]},
+        "note": "Account created and signed in",
+    }
 
 
 @app.post("/api/login")
 def login(req: LoginRequest):
-    """Demo auth: accepts any email/password, returns a session token."""
+    """Verify credentials against the users table."""
     email = req.email.strip().lower()
-    if "@" not in email or len(req.password) < 1:
-        return {"status": "error", "message": "Enter a valid email and any password"}
-    name = req.name or email.split("@")[0].replace(".", " ").replace("_", " ").title()
+    error = _validate(email, req.password)
+    if error and "email" not in error:
+        return {"status": "error", "message": error}
+    if "@" not in email:
+        return {"status": "error", "message": "Enter a valid email address"}
+    try:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT email, name, password_hash FROM users WHERE email = %s",
+                (email,),
+            )
+            row = cur.fetchone()
+            if not row or not _verify_password(req.password, row["password_hash"]):
+                return {"status": "error", "message": "Invalid email or password"}
+            cur.execute(
+                "UPDATE users SET last_login = NOW() WHERE email = %s", (email,)
+            )
+    except psycopg2.Error as exc:
+        return {"status": "error", "message": f"Login failed: {exc}"}
     return {
         "status": "ok",
         "token": _make_token(email),
-        "user": {"email": email, "name": name},
-        "note": "demo authentication — any email/password combination works",
+        "user": {"email": row["email"], "name": row["name"]},
     }
 
 
