@@ -11,13 +11,13 @@ import Models from "./pages/Models"
 import Pipeline from "./pages/Pipeline"
 import Sources from "./pages/Sources"
 import Settings from "./pages/Settings"
-import { NAV, AppShell } from "./components/UI"
+import { AppShell } from "./components/UI"
 
 function Protected({ children }) {
   const { user } = useAuth()
   const location = useLocation()
   if (!user) return <Navigate to="/login" replace />
-  return <AppShell nav={NAV}><div className="page-enter" key={location.pathname}>{children}</div></AppShell>
+  return <AppShell><div className="page-enter" key={location.pathname}>{children}</div></AppShell>
 }
 
 export default function App() {
