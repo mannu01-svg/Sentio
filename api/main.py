@@ -273,6 +273,8 @@ def summary():
                    count(*) FILTER (WHERE source = 'reddit')    AS reddit,
                    count(*) FILTER (WHERE source = 'youtube')   AS youtube,
                    count(*) FILTER (WHERE source = 'instagram') AS instagram,
+                   count(*) FILTER (WHERE source = 'facebook')  AS facebook,
+                   count(*) FILTER (WHERE source = 'x')         AS x,
                    max(processed_at) AS last_processed
             FROM comments
             """
@@ -292,7 +294,13 @@ def summary():
         },
         "avg_vader_score": round(float(row["avg_score"]), 4) if row["avg_score"] is not None else None,
         "bert_scored": row["bert_scored"] or 0,
-        "sources": {"reddit": row["reddit"] or 0, "youtube": row["youtube"] or 0, "instagram": row["instagram"] or 0},
+        "sources": {
+            "reddit": row["reddit"] or 0,
+            "youtube": row["youtube"] or 0,
+            "instagram": row["instagram"] or 0,
+            "facebook": row["facebook"] or 0,
+            "x": row["x"] or 0,
+        },
         "last_processed": row["last_processed"].isoformat() if row["last_processed"] else None,
     }
 

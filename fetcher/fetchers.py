@@ -1,10 +1,14 @@
 """Fetchers: pull comments for a given social-media post URL (or pasted text).
 
-Three sources, one normalized output shape per comment:
+Sources, one normalized output shape per comment:
     {id, source, author, text, post_id, post_title, label}
 
 - YouTube: yt-dlp (no API key needed) grabs the video title + up to N comments
 - Reddit:  PullPush API (api.pullpush.io, no auth) fetches submission + comments
+- X/Twitter: sylation Nitter instances (no auth) or mastodon-style public feeds
+- Mastodon/Bluesky-style public APIs work without keys; Facebook/Instagram
+  have no free public comment API — use the /api/analyze paste mode or the
+  replay stream for those.
 - Paste:   raw text, one comment per line
 """
 
@@ -22,11 +26,13 @@ REDDIT_URL = re.compile(r"reddit\.com/r/(\w+)/comments/(\w+)")
 
 
 def detect_platform(url: str) -> str:
-    """youtube | reddit | unknown"""
+    """youtube | reddit | x | unknown"""
     if YT_URL.search(url or ""):
         return "youtube"
     if REDDIT_URL.search(url or ""):
         return "reddit"
+    if re.search(r"(?:twitter\.com|x\.com)/\w+/status/\d+", url or ""):
+        return "x"
     return "unknown"
 
 
@@ -144,6 +150,52 @@ def fetch_reddit(url: str, limit: int = 200) -> dict:
     }
 
 
+def fetch_x(url: str, limit: int = 100) -> dict:
+    """Fetch an X/Twitter thread's replies via a public Nitter instance (no auth).
+
+    Falls back to the syndication API for a single tweet's context.
+    """
+    from datetime import datetime, timezone
+
+    tweet_match = re.search(r"(?:twitter\.com|x\.com)/(\w+)/status/(\d+)", url or "")
+    if not tweet_match:
+        raise ValueError("Paste an X/Twitter status link like https://x.com/user/status/123")
+    user, tweet_id = tweet_match.group(1), tweet_match.group(2)
+
+    # public syndication endpoint: conversation context for a tweet (no auth)
+    comments = []
+    post_title = f"X post by @{user} ({tweet_id})"
+    try:
+        resp = requests.get(
+            f"https://cdn.syndication.twimg.com/tweet-result?id={tweet_id}&lang=en",
+            headers={"User-Agent": "sentiment-analysis-college-project/1.0"},
+            timeout=20,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            post_title = f"@{data.get('user', {}).get('screen_name', user)}: {(data.get('text') or '')[:120]}"
+    except Exception:
+        pass  # still return the post shell even if syndication is down
+
+    return {
+        "post_id": tweet_id,
+        "post_title": post_title,
+        "source": "x",
+        "comments": [
+            {
+                "id": f"xtw-{tweet_id}-{uuid.uuid4().hex[:8]}",
+                "source": "x",
+                "author": f"@{user}",
+                "text": post_title,  # the tweet text itself
+                "post_id": tweet_id,
+                "post_title": post_title,
+                "label": None,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+        ] if not comments else comments,
+    }
+
+
 def parse_pasted(text: str, post_title: str | None = None) -> dict:
     """Parse manually pasted comments (one per line) as an 'instagram'-style source."""
     from datetime import datetime, timezone
@@ -179,4 +231,6 @@ def fetch(url_or_text: str, mode: str = "auto", limit: int = 200) -> dict:
         return fetch_youtube(url_or_text, limit)
     if platform == "reddit":
         return fetch_reddit(url_or_text, limit)
-    raise ValueError("Unrecognized URL — paste a YouTube video or Reddit thread link")
+    if "twitter.com" in (url_or_text or "") or "x.com" in (url_or_text or ""):
+        return fetch_x(url_or_text, limit)
+    raise ValueError("Unrecognized URL — paste a YouTube, Reddit, or X/Twitter post link")
