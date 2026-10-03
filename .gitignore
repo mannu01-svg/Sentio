@@ -28,6 +28,7 @@ frontend/dist/
 
 # Env & tools
 .env
+.env.local
 .tools/
 
 # Misc

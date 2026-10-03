@@ -29,6 +29,18 @@ mkdir -p "$LOGS"
 [ -f "$ROOT/data/raw/all_sources.csv" ] || { echo "⚠️  data/raw/all_sources.csv missing — falling back to sample dataset"; SAMPLE=1; }
 command -v docker >/dev/null || { echo "❌ docker not found"; exit 1; }
 
+# secrets (.env.local — "Kaggle API token = ..." style lines) → export for kagglehub
+if [ -f "$ROOT/.env.local" ]; then
+  while IFS= read -r line; do
+    case "$line" in
+      *'='*) KEY="${line%%=*}"; VAL="${line#*=}"
+             KEY=$(echo "$KEY" | tr ' ' '_' | tr '[:upper:]' '[:lower:]')
+             VAL=$(echo "$VAL" | sed 's/^ *//;s/ *$//')
+             export "$KEY=$VAL" ;;
+    esac
+  done < "$ROOT/.env.local"
+fi
+
 # stop anything already running from a previous start ----------------------
 "$ROOT/stop.sh" >/dev/null 2>&1 || true
 
