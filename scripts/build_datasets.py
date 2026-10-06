@@ -134,12 +134,13 @@ def build_instagram() -> list[dict]:
     # IG-3: multi-platform evolution — NO text column (metadata only), skipped.
     # IG-4: citynet (already cached from the first build) — 1301 real IG comments
     # with labels. This is the volume backbone for instagram.
-    citynet = "/home/ubuntu/.cache/kagglehub/datasets/vrashad/citynet-instagram-comments-sentiment-analysis/versions/1/citynet_denormalized_dataset_with_comment.csv"
+    kaggle_cache = os.path.join(os.path.expanduser("~"), ".cache", "kagglehub", "datasets")
+    citynet = os.path.join(kaggle_cache, "vrashad/citynet-instagram-comments-sentiment-analysis/versions/1/citynet_denormalized_dataset_with_comment.csv")
     for r in read_csv(citynet):
         add(r.get("Comment"), label=r.get("Label"), author="citynet_user", note="IG-4 citynet")
 
     # IG-5: kashishparmar02 social-media sentiments — the Instagram slice (249 rows)
-    kash = "/home/ubuntu/.cache/kagglehub/datasets/kashishparmar02/social-media-sentiments-analysis-dataset/versions/3/sentimentdataset.csv"
+    kash = os.path.join(kaggle_cache, "kashishparmar02/social-media-sentiments-analysis-dataset/versions/3/sentimentdataset.csv")
     for r in read_csv(kash):
         if (r.get("Platform") or "").strip().lower() != "instagram":
             continue
