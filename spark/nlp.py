@@ -1,6 +1,6 @@
 """NLP scoring functions for the sentiment pipeline.
 
-Two analysis approaches, run side by side on every comment:
+Three analysis approaches, run side by side on every comment:
 
 1. VADER  (Valence Aware Dictionary and sEntiment Reasoner)
    - classic, rule/lexicon-based, transparent, tuned for social media text
@@ -10,7 +10,12 @@ Two analysis approaches, run side by side on every comment:
    - transformer ("AI") model, context-aware
    - returns a POSITIVE/NEGATIVE label plus confidence
 
-Both are plain Python functions so they are easy to unit test, and are
+3. RoBERTa fine-tuned on 124M tweets (cardiffnlp, HuggingFace)
+   - tweet-trained LLM — understands slang, emojis, sarcasm patterns
+   - returns a positive/neutral/negative label plus confidence
+   - the authoritative score for social-media comments
+
+All are plain Python functions so they are easy to unit test, and are
 invoked inside the Spark job via mapInPandas / UDFs.
 """
 
@@ -79,6 +84,19 @@ def _bert_pipeline():
     )
 
 
+BATCH_SIZE = int(__import__("os").getenv("NLP_BATCH_SIZE", "64"))
+
+
+def bert_batch(texts: list[str]) -> list[dict]:
+    """DistilBERT over a batch (batched inference is ~4x faster per text)."""
+    cleaned = [(t or "")[:512] for t in texts]
+    results = _bert_pipeline()(cleaned, batch_size=BATCH_SIZE)
+    return [
+        {"bert_label": r["label"].lower(), "bert_score": float(r["score"])}
+        for r in results
+    ]
+
+
 def bert_analyze(text: str) -> dict:
     """DistilBERT sentiment: label + confidence score."""
     result = _bert_pipeline()(text[:512])[0]
@@ -88,8 +106,49 @@ def bert_analyze(text: str) -> dict:
     }
 
 
+LLM_MODEL = "cardiffnlp/twitter-roberta-base-sentiment-latest"
+
+LLM_LABEL_MAP = {"positive": "positive", "neutral": "neutral", "negative": "negative"}
+
+
+@lru_cache(maxsize=1)
+def _llm_pipeline():
+    """Lazy-load the tweet-trained RoBERTa (cardiffnlp) once per process."""
+    from transformers import pipeline
+
+    return pipeline(
+        task="sentiment-analysis",
+        model=LLM_MODEL,
+        truncation=True,
+    )
+
+
+def llm_analyze(text: str) -> dict:
+    """Tweet-trained LLM (cardiffnlp RoBERTa): 3-class label + confidence."""
+    result = _llm_pipeline()(text[:512])[0]
+    label = str(result["label"]).lower()
+    return {
+        "llm_label": LLM_LABEL_MAP.get(label, label),  # positive | neutral | negative
+        "llm_score": float(result["score"]),
+    }
+
+
+def llm_batch(texts: list[str]) -> list[dict]:
+    """LLM over a batch — batched inference is ~4x faster per text than one-by-one."""
+    cleaned = [(t or "")[:512] for t in texts]
+    results = _llm_pipeline()(cleaned, batch_size=BATCH_SIZE)
+    out = []
+    for r in results:
+        label = str(r["label"]).lower()
+        out.append({
+            "llm_label": LLM_LABEL_MAP.get(label, label),
+            "llm_score": float(r["score"]),
+        })
+    return out
+
+
 def analyze_row(row: dict) -> dict:
-    """Score one already-cleaned row with both models (used by Spark mapInPandas)."""
+    """Score one already-cleaned row with all three models (used by Spark mapInPandas)."""
     text = row["cleaned_text"]
     out = dict(row)
     out.update(vader_analyze(text))
@@ -98,4 +157,9 @@ def analyze_row(row: dict) -> dict:
     except Exception:  # model load/oom failures must not kill the stream
         out["bert_label"] = None
         out["bert_score"] = None
+    try:
+        out.update(llm_analyze(text))
+    except Exception:  # LLM failures must not kill the stream either
+        out["llm_label"] = None
+        out["llm_score"] = None
     return out

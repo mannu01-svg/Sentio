@@ -66,11 +66,13 @@ def bert_full_schema(base_schema: T.StructType) -> T.StructType:
 
     Note: StructType.add() mutates in place, so build a fresh StructType
     instead of calling base_schema.add(...) — otherwise the input DataFrame's
-    schema gains bert columns that do not exist yet.
+    schema gains bert/llm columns that do not exist yet.
     """
     return T.StructType(list(base_schema.fields) + [
         T.StructField("bert_label", T.StringType()),
         T.StructField("bert_score", T.DoubleType()),
+        T.StructField("llm_label", T.StringType()),
+        T.StructField("llm_score", T.DoubleType()),
     ])
 
 
@@ -81,22 +83,31 @@ def build_spark() -> SparkSession:
         .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4")
         .config("spark.sql.shuffle.partitions", "4")
         .config("spark.driver.memory", "2g")
+        # mapInPandas: hand each worker >=256 rows so transformer batching pays off
+        .config("spark.sql.execution.arrow.maxRecordsPerBatch", "256")
         .getOrCreate()
     )
 
 
 def bert_map(iterator):
-    """mapInPandas worker: add bert_label/bert_score columns, never crash the stream."""
+    """mapInPandas worker: add bert + llm columns via batched inference (4x faster)."""
     for pdf in iterator:
         if pdf.empty:
             yield pdf
             continue
+        texts = pdf["cleaned_text"].fillna("").tolist()
         try:
-            results = pdf["cleaned_text"].apply(nlp.bert_analyze).apply(pd.Series)
-            pdf = pd.concat([pdf.reset_index(drop=True), results.reset_index(drop=True)], axis=1)
+            results = pd.DataFrame(nlp.bert_batch(texts))
+            pdf = pd.concat([pdf.reset_index(drop=True), results], axis=1)
         except Exception:
             pdf["bert_label"] = None
             pdf["bert_score"] = None
+        try:
+            llm_results = pd.DataFrame(nlp.llm_batch(texts))
+            pdf = pd.concat([pdf.reset_index(drop=True), llm_results], axis=1)
+        except Exception:
+            pdf["llm_label"] = None
+            pdf["llm_score"] = None
         yield pdf
 
 
@@ -106,13 +117,15 @@ def upsert_comments(batch_df, _batch_id: int) -> None:
         (
             r["id"], r["source"], r["author"], r["text"], r["cleaned_text"], r["label"],
             r["vader_label"], r["vader_score"], r["vader_positive"], r["vader_negative"],
-            r["vader_neutral"], r["bert_label"], r["bert_score"], r["event_ts"],
+            r["vader_neutral"], r["bert_label"], r["bert_score"],
+            r["llm_label"], r["llm_score"], r["event_ts"],
             r["post_id"], r["post_title"],
         )
         for r in batch_df.select(
             "id", "source", "author", "text", "cleaned_text", "label",
             "vader_label", "vader_score", "vader_positive", "vader_negative",
-            "vader_neutral", "bert_label", "bert_score", "event_ts",
+            "vader_neutral", "bert_label", "bert_score",
+            "llm_label", "llm_score", "event_ts",
             "post_id", "post_title",
         ).collect()
     ]
@@ -128,7 +141,8 @@ def upsert_comments(batch_df, _batch_id: int) -> None:
             """
             INSERT INTO comments (id, source, author, text, cleaned_text, label,
                 vader_label, vader_score, vader_positive, vader_negative,
-                vader_neutral, bert_label, bert_score, ts, post_id, post_title)
+                vader_neutral, bert_label, bert_score, llm_label, llm_score,
+                ts, post_id, post_title)
             VALUES %s
             ON CONFLICT (id) DO UPDATE SET
                 vader_label = EXCLUDED.vader_label,
@@ -138,6 +152,8 @@ def upsert_comments(batch_df, _batch_id: int) -> None:
                 vader_neutral = EXCLUDED.vader_neutral,
                 bert_label = EXCLUDED.bert_label,
                 bert_score = EXCLUDED.bert_score,
+                llm_label = EXCLUDED.llm_label,
+                llm_score = EXCLUDED.llm_score,
                 processed_at = NOW()
             """,
             rows,
@@ -224,23 +240,27 @@ def main() -> None:
         F.col("v.vader_neutral").alias("vader_neutral"),
     ).drop("v")
 
-    # 4. DistilBERT scoring (skippable for quick smoke tests)
+    # 4. DistilBERT + LLM scoring (skippable for quick smoke tests)
     if SKIP_BERT:
         scored = scored.withColumn("bert_label", F.lit(None).cast(T.StringType())) \
-                       .withColumn("bert_score", F.lit(None).cast(T.DoubleType()))
+                       .withColumn("bert_score", F.lit(None).cast(T.DoubleType())) \
+                       .withColumn("llm_label", F.lit(None).cast(T.StringType())) \
+                       .withColumn("llm_score", F.lit(None).cast(T.DoubleType()))
     else:
         scored = scored.mapInPandas(bert_map, bert_full_schema(scored.schema))
 
     # 5. 1-minute tumbling window aggregates with 2-minute watermark
+    #    headline sentiment = LLM label (falls back to VADER in SKIP_BERT fast mode)
+    primary_label = F.coalesce(F.col("llm_label"), F.col("vader_label"))
     per_window = (
         scored.withWatermark("event_ts", "2 minutes")
         .groupBy(F.window("event_ts", f"{WINDOW_SECONDS} seconds"))
         .agg(
             F.count("*").alias("total"),
-            F.sum(F.when(F.col("vader_label") == "positive", 1).otherwise(0)).alias("positive"),
-            F.sum(F.when(F.col("vader_label") == "negative", 1).otherwise(0)).alias("negative"),
-            F.sum(F.when(F.col("vader_label") == "neutral", 1).otherwise(0)).alias("neutral"),
-            F.avg("vader_score").alias("avg_score"),
+            F.sum(F.when(primary_label == "positive", 1).otherwise(0)).alias("positive"),
+            F.sum(F.when(primary_label == "negative", 1).otherwise(0)).alias("negative"),
+            F.sum(F.when(primary_label == "neutral", 1).otherwise(0)).alias("neutral"),
+            F.avg("llm_score").alias("avg_score"),
         )
         .select(
             F.col("window.start").alias("window_start"),
