@@ -29,13 +29,15 @@ mkdir -p "$LOGS"
 [ -f "$ROOT/data/raw/all_sources.csv" ] || { echo "⚠️  data/raw/all_sources.csv missing — falling back to sample dataset"; SAMPLE=1; }
 command -v docker >/dev/null || { echo "❌ docker not found"; exit 1; }
 
-# secrets (.env.local — "Kaggle API token = ..." style lines) → export for kagglehub
+# secrets (.env.local — canonical SCREAMING_SNAKE_CASE=VALUE lines) → export
 if [ -f "$ROOT/.env.local" ]; then
   while IFS= read -r line; do
+    line="${line%%#*}"  # strip comments
     case "$line" in
       *'='*) KEY="${line%%=*}"; VAL="${line#*=}"
-             KEY=$(echo "$KEY" | tr ' ' '_' | tr '[:upper:]' '[:lower:]')
-             VAL=$(echo "$VAL" | sed 's/^ *//;s/ *$//')
+             KEY=$(echo "$KEY" | sed 's/^ *//;s/ *$//')
+             VAL=$(echo "$VAL" | sed 's/^ *//;s/ *$//;s/^"//;s/"$//')
+             [ -z "$KEY" ] && continue
              export "$KEY=$VAL" ;;
     esac
   done < "$ROOT/.env.local"
@@ -59,19 +61,27 @@ echo
 echo "   kafka + postgres healthy"
 
 # topics (idempotent) ------------------------------------------------------
-echo "▶ [3/6] ensuring kafka topics..."
+echo "▶ [3/7] ensuring kafka topics..."
 docker exec sma-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic comments-raw --partitions 3 --if-not-exists >/dev/null 2>&1 || \
 docker exec sma-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic comments-raw --partitions 3 >/dev/null 2>&1 || true
 docker exec sma-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic comments-scored --partitions 3 --if-not-exists >/dev/null 2>&1 || \
 docker exec sma-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic comments-scored --partitions 3 >/dev/null 2>&1 || true
 
+# one-time model warmup (downloads the sentiment LLMs on first setup) -------
+if [ ! -d "$HOME/.cache/huggingface/hub/models--cardiffnlp--twitter-roberta-base-sentiment-latest" ]; then
+  echo "▶ [4/7] first run: downloading sentiment models (one-time, ~5 min)..."
+  "$ROOT/.venv/bin/python" "$ROOT/scripts/warmup_models.py" || echo "⚠ model warmup failed — the Spark job will retry downloads on start"
+else
+  echo "▶ [4/7] sentiment models already cached ✓"
+fi
+
 # fresh state --------------------------------------------------------------
 if [ "$FRESH" = "1" ]; then
-  echo "▶ [4/6] --fresh: truncating tables + checkpoints..."
+  echo "▶ [5/7] --fresh: truncating tables + checkpoints..."
   docker exec sma-postgres psql -U sentiment -d sentiment -c "TRUNCATE comments, window_stats;" >/dev/null 2>&1 || true
   rm -rf "$ROOT/checkpoints"
 else
-  echo "▶ [4/6] keeping existing data (use --fresh for a clean demo state)"
+  echo "▶ [5/7] keeping existing data (use --fresh for a clean demo state)"
 fi
 
 # java ---------------------------------------------------------------------
@@ -81,7 +91,7 @@ if [ -d "$HOME/.tools/jdk-17" ]; then
 fi
 
 # background services ------------------------------------------------------
-echo "▶ [5/6] starting services..."
+echo "▶ [6/7] starting services..."
 
 SKIP_BERT_FLAG=""
 [ "$FAST" = "1" ] && SKIP_BERT_FLAG="1"
@@ -90,14 +100,16 @@ SKIP_BERT_FLAG=""
 
 DATA_FILE="data/raw/all_sources.csv"
 [ "${SAMPLE:-0}" = "1" ] && DATA_FILE="data/sample_comments.csv"
-( setsid nohup "$ROOT/.venv/bin/python" producer/producer.py --file "$DATA_FILE" --rate 15 --loop --shuffle > "$LOGS/producer.log" 2>&1 < /dev/null & echo $! > "$LOGS/producer.pid" )
+# seed one pass so the dashboard starts populated, then idle; the API's
+# "Go live" button writes logs/live-stream.json to trigger high-rate bursts
+( setsid nohup "$ROOT/.venv/bin/python" producer/producer.py --file "$DATA_FILE" --seed "${SEED_ROWS:-6000}" --shuffle > "$LOGS/producer.log" 2>&1 < /dev/null & echo $! > "$LOGS/producer.pid" )
 
 ( setsid nohup "$ROOT/.venv/bin/uvicorn" api.main:app --port 8000 > "$LOGS/api.log" 2>&1 < /dev/null & echo $! > "$LOGS/api.pid" )
 
 ( cd "$ROOT/frontend" && setsid nohup npm run dev > "$LOGS/frontend.log" 2>&1 < /dev/null & echo $! > "$LOGS/frontend.pid" )
 
 # verify -------------------------------------------------------------------
-echo -n "▶ [6/6] verifying services"
+echo -n "▶ [7/7] verifying services"
 sleep 45
 for i in $(seq 1 12); do
   API_OK=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health 2>/dev/null || echo 000)
