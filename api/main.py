@@ -9,6 +9,7 @@ Docs:
 
 import csv
 import io
+import json
 import os
 import re
 import sys
@@ -258,23 +259,91 @@ def health():
         return {"status": "degraded", "database": f"down: {exc}"}
 
 
+# ---------------------------------------------------------------------------
+# Live stream control: the producer idles until a control file asks for a burst
+# ---------------------------------------------------------------------------
+
+CONTROL_PATH = os.getenv(
+    "LIVE_CONTROL",
+    os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs", "live-stream.json")),
+)
+
+
+def _control_until() -> tuple[float, int]:
+    try:
+        with open(CONTROL_PATH) as handle:
+            data = json.load(handle)
+        return float(data.get("until", 0)), int(data.get("rate", 40))
+    except Exception:
+        return 0.0, 40
+
+
+class LiveStreamRequest(BaseModel):
+    minutes: float = 3.0   # burst duration
+    rate: int = 40         # messages per second
+
+
+@app.post("/api/stream/live")
+def stream_live(req: LiveStreamRequest):
+    """Tell the producer to start streaming a high-rate live burst.
+
+    The producer process watches logs/live-stream.json; we write
+    {"until": <epoch>, "rate": N} and it streams until that timestamp.
+    """
+    minutes = min(max(req.minutes, 0.5), 30.0)
+    rate = min(max(req.rate, 5), 120)
+    until = _time.time() + minutes * 60
+    current_until, _ = _control_until()
+    os.makedirs(os.path.dirname(CONTROL_PATH), exist_ok=True)
+    with open(CONTROL_PATH, "w") as handle:
+        json.dump({"until": max(until, current_until), "rate": rate}, handle)
+    return {
+        "status": "ok",
+        "live": True,
+        "rate": rate,
+        "duration_minutes": minutes,
+        "until": until,
+        "ends_at": datetime.fromtimestamp(until).strftime("%H:%M:%S"),
+        "note": f"Producer is streaming at {rate}/s for {minutes:g} min — counters are climbing",
+    }
+
+
+@app.post("/api/stream/stop")
+def stream_stop():
+    """End the live burst immediately (producer goes back to idle)."""
+    with open(CONTROL_PATH, "w") as handle:
+        json.dump({"until": _time.time(), "rate": 0}, handle)
+    return {"status": "ok", "live": False, "note": "Live burst stopped — producer is idle"}
+
+
+@app.get("/api/stream/status")
+def stream_status():
+    """Whether the producer is currently mid-burst (powers the Go-live button)."""
+    until, rate = _control_until()
+    live = until > _time.time()
+    return {"live": live, "rate": rate, "until": until,
+            "seconds_left": round(until - _time.time()) if live else 0}
+
+
 @app.get("/api/summary")
 def summary():
-    """KPI cards: totals, sentiment split (VADER), BERT coverage, throughput."""
+    """KPI cards: totals, sentiment split (LLM — the authoritative score), coverage."""
     with db() as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT count(*) AS total,
-                   count(*) FILTER (WHERE vader_label = 'positive') AS positive,
-                   count(*) FILTER (WHERE vader_label = 'negative') AS negative,
-                   count(*) FILTER (WHERE vader_label = 'neutral')  AS neutral,
-                   avg(vader_score) AS avg_score,
+                   count(*) FILTER (WHERE llm_label = 'positive') AS positive,
+                   count(*) FILTER (WHERE llm_label = 'negative') AS negative,
+                   count(*) FILTER (WHERE llm_label = 'neutral')  AS neutral,
+                   count(*) FILTER (WHERE vader_label IS NOT NULL) AS vader_scored,
                    count(*) FILTER (WHERE bert_label IS NOT NULL) AS bert_scored,
+                   count(*) FILTER (WHERE llm_label IS NOT NULL) AS llm_scored,
                    count(*) FILTER (WHERE source = 'reddit')    AS reddit,
                    count(*) FILTER (WHERE source = 'youtube')   AS youtube,
                    count(*) FILTER (WHERE source = 'instagram') AS instagram,
                    count(*) FILTER (WHERE source = 'facebook')  AS facebook,
                    count(*) FILTER (WHERE source = 'x')         AS x,
+                   count(*) FILTER (WHERE source = 'threads')   AS threads,
                    max(processed_at) AS last_processed
             FROM comments
             """
@@ -292,14 +361,17 @@ def summary():
             "negative_pct": round((row["negative"] or 0) * 100 / total, 1) if total else 0,
             "neutral_pct": round((row["neutral"] or 0) * 100 / total, 1) if total else 0,
         },
-        "avg_vader_score": round(float(row["avg_score"]), 4) if row["avg_score"] is not None else None,
+        "scorer": "llm",
+        "vader_scored": row["vader_scored"] or 0,
         "bert_scored": row["bert_scored"] or 0,
+        "llm_scored": row["llm_scored"] or 0,
         "sources": {
             "reddit": row["reddit"] or 0,
             "youtube": row["youtube"] or 0,
             "instagram": row["instagram"] or 0,
             "facebook": row["facebook"] or 0,
             "x": row["x"] or 0,
+            "threads": row["threads"] or 0,
         },
         "last_processed": row["last_processed"].isoformat() if row["last_processed"] else None,
     }
@@ -340,7 +412,7 @@ def comments(
         clauses.append("source = %s")
         params.append(source)
     if sentiment:
-        clauses.append("vader_label = %s")
+        clauses.append("llm_label = %s")
         params.append(sentiment)
     if q:
         clauses.append("(text ILIKE %s OR cleaned_text ILIKE %s)")
@@ -353,10 +425,10 @@ def comments(
         cur.execute(
             f"""
             SELECT id, source, author, text, label, vader_label, vader_score,
-                   bert_label, bert_score, ts, post_id
+                   bert_label, bert_score, llm_label, llm_score, ts, post_id
             FROM comments
             WHERE {' AND '.join(clauses)}
-            ORDER BY ts DESC NULLS LAST
+            ORDER BY processed_at DESC, ts DESC NULLS LAST
             LIMIT %s
             """,
             (*params, limit),
@@ -372,7 +444,7 @@ def words(limit: int = Query(15, ge=3, le=50), sentiment: str | None = None):
     """Top words across recent comments (simple frequency count)."""
     clauses, params = ["1=1"], []
     if sentiment:
-        clauses.append("vader_label = %s")
+        clauses.append("llm_label = %s")
         params.append(sentiment)
     with db() as conn, conn.cursor() as cur:
         cur.execute(
@@ -396,13 +468,17 @@ def words(limit: int = Query(15, ge=3, le=50), sentiment: str | None = None):
 
 @app.get("/api/compare")
 def compare(limit: int = Query(500, ge=10, le=5000)):
-    """VADER (lexicon) vs DistilBERT (transformer) agreement + label accuracy."""
+    """3-way model comparison: VADER (lexicon) vs DistilBERT (SST-2) vs LLM (tweet-RoBERTa).
+
+    The LLM (cardiffnlp, trained on 124M tweets) is the authoritative score;
+    agreement and per-model accuracy are reported against it.
+    """
     with db() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT vader_label, bert_label, label, vader_score, text
+            SELECT vader_label, bert_label, llm_label, label, vader_score, text
             FROM comments
-            WHERE vader_label IS NOT NULL AND bert_label IS NOT NULL
+            WHERE vader_label IS NOT NULL AND llm_label IS NOT NULL
             ORDER BY ts DESC NULLS LAST
             LIMIT %s
             """,
@@ -415,33 +491,42 @@ def compare(limit: int = Query(500, ge=10, le=5000)):
         return {"compared": 0}
 
     def norm_bert(label: str | None) -> str | None:
-        # BERT SST-2 has no neutral; treat low-confidence negative as neutral-ish
         return label
 
-    agreement = sum(1 for r in rows if r["vader_label"] == norm_bert(r["bert_label"]))
+    bert_rows = [r for r in rows if r["bert_label"]]
+    bert_agree_llm = sum(1 for r in bert_rows if r["bert_label"] == r["llm_label"])
+    vader_agree_llm = sum(1 for r in rows if r["vader_label"] == r["llm_label"])
+    all_three = sum(
+        1 for r in rows
+        if r["bert_label"] and r["vader_label"] == r["bert_label"] == r["llm_label"]
+    )
     labeled = [r for r in rows if r["label"]]
     correct_vader = sum(
         1 for r in labeled if r["label"].lower().startswith(r["vader_label"][:4])
     )
-    disagreements = [
-        {
-            "text": r["text"][:200],
-            "vader": r["vader_label"],
-            "bert": r["bert_label"],
-            "vader_score": r["vader_score"],
-        }
-        for r in rows
-        if r["vader_label"] != norm_bert(r["bert_label"])
+    correct_llm = sum(
+        1 for r in labeled if r["llm_label"].startswith(r["label"].lower()[:4])
+    )
+    # examples where the LLM corrects VADER (the strongest demo material)
+    corrections = [
+        {"text": r["text"][:200], "vader": r["vader_label"], "llm": r["llm_label"],
+         "vader_score": r["vader_score"]}
+        for r in rows if r["vader_label"] != r["llm_label"]
     ][:10]
 
     return {
         "compared": total,
-        "agreement_pct": round(agreement * 100 / total, 1),
-        "agree": agreement,
-        "disagree": total - agreement,
+        "models": ["vader", "bert", "llm"],
+        "vader_vs_llm_agreement_pct": round(vader_agree_llm * 100 / total, 1),
+        "bert_vs_llm_agreement_pct": round(bert_agree_llm * 100 / len(bert_rows), 1) if bert_rows else None,
+        "all_three_agreement_pct": round(all_three * 100 / total, 1),
+        "agree_vader_llm": vader_agree_llm,
+        "disagree_vader_llm": total - vader_agree_llm,
         "label_accuracy_vader_pct": round(correct_vader * 100 / len(labeled), 1) if labeled else None,
+        "label_accuracy_llm_pct": round(correct_llm * 100 / len(labeled), 1) if labeled else None,
         "labeled_examples": len(labeled),
-        "disagreement_examples": disagreements,
+        "llm_corrections": corrections,
+        "note": "LLM = cardiffnlp twitter-roberta (124M tweets) — authoritative social-media score",
     }
 
 
@@ -509,6 +594,29 @@ def analyze(req: AnalyzeRequest):
     }
 
 
+def _sentiment_select(label_col: str = "llm_label") -> str:
+    """Shared aggregate fragment: counts + pcts for one label column."""
+    return f"""
+            count(*) AS total,
+            count(*) FILTER (WHERE {label_col} = 'positive') AS positive,
+            count(*) FILTER (WHERE {label_col} = 'negative') AS negative,
+            count(*) FILTER (WHERE {label_col} = 'neutral')  AS neutral,
+            avg(llm_score) AS avg_score
+    """
+
+
+def _sentiment_payload(row: dict) -> dict:
+    total = row["total"] or 0
+    return {
+        "positive": row["positive"] or 0,
+        "negative": row["negative"] or 0,
+        "neutral": row["neutral"] or 0,
+        "positive_pct": round((row["positive"] or 0) * 100 / total, 1) if total else 0,
+        "negative_pct": round((row["negative"] or 0) * 100 / total, 1) if total else 0,
+        "neutral_pct": round((row["neutral"] or 0) * 100 / total, 1) if total else 0,
+    }
+
+
 @app.get("/api/posts")
 def posts():
     """Analyzed posts (URL/paste ingests) with their live sentiment summary."""
@@ -516,14 +624,7 @@ def posts():
     with db() as conn, conn.cursor() as cur:
         for post_id, info in ANALYZED.posts.items():
             cur.execute(
-                """
-                SELECT count(*) AS total,
-                       count(*) FILTER (WHERE vader_label = 'positive') AS positive,
-                       count(*) FILTER (WHERE vader_label = 'negative') AS negative,
-                       count(*) FILTER (WHERE vader_label = 'neutral')  AS neutral,
-                       avg(vader_score) AS avg_score
-                FROM comments WHERE post_id = %s
-                """,
+                f"SELECT {_sentiment_select()} FROM comments WHERE post_id = %s",
                 (post_id,),
             )
             row = dict(cur.fetchone())
@@ -531,18 +632,194 @@ def posts():
             out.append({
                 **info,
                 "scored": total,
-                "sentiment": {
-                    "positive": row["positive"] or 0,
-                    "negative": row["negative"] or 0,
-                    "neutral": row["neutral"] or 0,
-                    "positive_pct": round((row["positive"] or 0) * 100 / total, 1) if total else 0,
-                    "negative_pct": round((row["negative"] or 0) * 100 / total, 1) if total else 0,
-                    "neutral_pct": round((row["neutral"] or 0) * 100 / total, 1) if total else 0,
-                },
-                "avg_vader_score": round(float(row["avg_score"]), 3) if row["avg_score"] is not None else None,
+                "sentiment": _sentiment_payload(row),
+                "avg_score": round(float(row["avg_score"]), 3) if row["avg_score"] is not None else None,
             })
     out.sort(key=lambda p: p["analyzed_at"], reverse=True)
     return {"posts": out, "count": len(out)}
+
+
+# ---------------------------------------------------------------------------
+# Account-level analysis (fetch every comment across an account's posts)
+# ---------------------------------------------------------------------------
+
+class AnalyzeAccountRequest(BaseModel):
+    platform: str            # youtube | reddit
+    handle: str
+    limit: int = 100         # comments per post
+    max_videos: int = 5      # youtube only: how many recent videos
+
+
+ACCOUNTS = {}  # account_key -> {platform, handle, posts: [post_id...], analyzed_at}
+
+
+@app.post("/api/analyze-account")
+def analyze_account(req: AnalyzeAccountRequest):
+    """Fetch every comment across an account's recent posts and push them into the pipeline."""
+    import fetchers
+    import publisher
+
+    try:
+        posts = fetchers.fetch_account(
+            req.platform, req.handle,
+            limit=min(req.limit, 500), max_videos=min(req.max_videos, 10),
+        )
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+    except Exception as exc:
+        return {"status": "error", "message": f"account fetch failed: {exc}"}
+
+    account_key = f"{req.platform.lower()}:{req.handle.strip().lstrip('@').lower()}"
+    published_total, post_infos = 0, []
+    for post in posts:
+        sent = publisher.publish_comments(post["comments"])
+        published_total += sent
+        info = {
+            "post_id": post["post_id"],
+            "post_title": post["post_title"],
+            "source": post["source"],
+            "comments_fetched": len(post["comments"]),
+            "comments_published": sent,
+        }
+        ANALYZED.add(post["post_id"], info)
+        post_infos.append(info)
+
+    ACCOUNTS[account_key] = {
+        "platform": req.platform.lower(),
+        "handle": req.handle,
+        "posts": [p["post_id"] for p in post_infos],
+        "analyzed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    return {
+        "status": "ok",
+        "account_key": account_key,
+        "platform": req.platform.lower(),
+        "handle": req.handle,
+        "posts_analyzed": len(post_infos),
+        "comments_fetched": sum(p["comments_fetched"] for p in post_infos),
+        "comments_published": published_total,
+        "post_ids": [p["post_id"] for p in post_infos],
+        "note": "Comments are streaming through Kafka -> Spark; account scores appear in ~30-60s.",
+    }
+
+
+@app.get("/api/accounts")
+def accounts():
+    """Recently analyzed accounts with aggregate sentiment across all their posts."""
+    out = []
+    with db() as conn, conn.cursor() as cur:
+        for key, info in ACCOUNTS.items():
+            if not info["posts"]:
+                continue
+            placeholders = ",".join(["%s"] * len(info["posts"]))
+            cur.execute(
+                f"""
+                SELECT {_sentiment_select()}
+                FROM comments WHERE post_id IN ({placeholders})
+                """,
+                info["posts"],
+            )
+            row = dict(cur.fetchone())
+            total = row["total"] or 0
+            out.append({
+                **info,
+                "account_key": key,
+                "scored": total,
+                "posts_count": len(info["posts"]),
+                "sentiment": _sentiment_payload(row),
+                "avg_score": round(float(row["avg_score"]), 3) if row["avg_score"] is not None else None,
+            })
+    out.sort(key=lambda a: a["analyzed_at"], reverse=True)
+    return {"accounts": out, "count": len(out)}
+
+
+# ---------------------------------------------------------------------------
+# Threads OAuth: consent URL + code exchange + connection status
+# ---------------------------------------------------------------------------
+
+def _persist_env(key: str, value: str):
+    """Persist KEY=value into .env.local (idempotent, keeps comments/other lines)."""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env.local")
+    env_path = os.path.normpath(env_path)
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            lines = f.read().splitlines()
+    replaced = False
+    for i, line in enumerate(lines):
+        if line.strip().startswith(f"{key}="):
+            lines[i] = f"{key}={value}"
+            replaced = True
+            break
+    if not replaced:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(f"{key}={value}")
+    with open(env_path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    os.environ[key] = value
+
+
+@app.get("/api/threads/auth-url")
+def threads_auth_url():
+    """Consent URL for the Threads OAuth flow (future scope — needs app creds)."""
+    import fetchers
+    try:
+        return {"status": "ok", "url": fetchers.threads_auth_url(), "redirect_uri": fetchers.threads_redirect_uri()}
+    except ValueError as exc:
+        return {"status": "error", "message": f"Threads OAuth not configured: {exc}"}
+
+
+@app.get("/api/threads/status")
+def threads_status():
+    """Threads connection state: configured (app creds present) + connected (token valid)."""
+    import fetchers
+    configured = bool(os.getenv("THREADS_APP_ID") and os.getenv("THREADS_APP_SECRET"))
+    if not os.getenv("THREADS_ACCESS_TOKEN"):
+        return {"status": "ok", "configured": configured, "connected": False,
+                "reason": None if configured else "future scope — THREADS_APP_ID/SECRET not configured"}
+    try:
+        import requests as _rq
+        me = _rq.get(
+            f"{fetchers.THREADS_API}/me",
+            params={"fields": "id,username", "access_token": os.getenv("THREADS_ACCESS_TOKEN")},
+            timeout=15,
+        )
+        data = me.json() if me.status_code == 200 else {}
+        if data.get("id"):
+            return {"status": "ok", "configured": True, "connected": True, "username": data.get("username"), "user_id": data.get("id")}
+        return {"status": "ok", "configured": configured, "connected": False, "reason": "token invalid/expired — reconnect"}
+    except Exception as exc:
+        return {"status": "ok", "configured": configured, "connected": False, "reason": str(exc)}
+
+
+@app.get("/api/threads/callback")
+def threads_callback(code: str | None = None, error: str | None = None):
+    """OAuth redirect target: exchange ?code= for a long-lived token, persist it."""
+    import fetchers
+    if error:
+        return {"status": "error", "message": f"OAuth denied: {error}"}
+    if not code:
+        return {"status": "error", "message": "No authorization code in callback"}
+    try:
+        result = fetchers.threads_exchange_code(code)
+        _persist_env("THREADS_ACCESS_TOKEN", result["access_token"])
+        return {
+            "status": "ok",
+            "connected": True,
+            "expires_in": result.get("expires_in"),
+            "note": "Token persisted to .env.local — account analysis is now unlocked",
+        }
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+
+
+@app.post("/api/threads/disconnect")
+def threads_disconnect():
+    """Remove the stored Threads token."""
+    _persist_env("THREADS_ACCESS_TOKEN", "")
+    return {"status": "ok", "connected": False}
 
 
 # ---------------------------------------------------------------------------
@@ -553,18 +830,44 @@ HASHTAG_RE = re.compile(r"#\w{2,}")
 
 
 @app.get("/api/trends")
-def trends(limit: int = Query(10, ge=3, le=30)):
-    """Hashtags/words whose mention velocity is rising (recent window vs before)."""
+def trends(limit: int = Query(10, ge=3, le=30), source: str | None = Query(None, description="youtube | x | reddit")):
+    """Hashtags/words whose mention velocity is rising (recent window vs before).
+
+    Falls back to a 24h lookback when the stream has been idle, so the tab
+    always shows meaningful rising terms instead of going empty.
+    """
+    clauses, params = ["1=1"], []
+    if source and source != "all":
+        clauses.append("source = %s")
+        params.append(source)
+    where = " AND ".join(clauses)
+
     with db() as conn, conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT cleaned_text, ts,
                    (ts >= now() - interval '30 minutes') AS recent
             FROM comments
-            WHERE ts >= now() - interval '60 minutes'
-            """
+            WHERE {where} AND ts >= now() - interval '60 minutes'
+            """,
+            params,
         )
         rows = [dict(r) for r in cur.fetchall()]
+        lookback_minutes = 60
+        if len(rows) < 60:  # stream idle — widen to 24h so trends stay alive
+            cur.execute(
+                f"""
+                SELECT cleaned_text, ts,
+                       (ts >= now() - interval '12 hours') AS recent
+                FROM comments
+                WHERE {where} AND ts >= now() - interval '24 hours'
+                """,
+                params,
+            )
+            widened = [dict(r) for r in cur.fetchall()]
+            if len(widened) > len(rows):
+                rows = widened
+                lookback_minutes = 1440
 
     recent_tags, older_tags = Counter(), Counter()
     recent_words, older_words = Counter(), Counter()
@@ -594,8 +897,257 @@ def trends(limit: int = Query(10, ge=3, le=30)):
         "hashtags": velocity(recent_tags, older_tags),
         "words": velocity(recent_words, older_words),
         "recent_window_minutes": 30,
+        "lookback_minutes": lookback_minutes,
+        "source": source or "all",
         "total_recent": sum(recent_tags.values()) + sum(recent_words.values()) // 2,
     }
+
+
+# ---------------------------------------------------------------------------
+# Per-source trending topics: top keywords per platform (youtube / x / reddit)
+# Powers the Dashboard "Trending topics" cards — click one -> live topic stream.
+# ---------------------------------------------------------------------------
+
+@app.get("/api/trending")
+def trending(source: str | None = Query(None, description="youtube | x | reddit | all"), limit: int = Query(8, ge=3, le=20)):
+    """Top topics per source: keyword frequency over the source's full stored history.
+
+    Real counts (not a sample) + a 2x fresh boost for mentions in the last 30 min,
+    so numbers stay meaningful and shift as the stream flows.
+    """
+    sources = [source] if source and source != "all" else ["youtube", "x", "reddit"]
+    out = {}
+    with db() as conn, conn.cursor() as cur:
+        for src in sources:
+            cur.execute(
+                """
+                SELECT cleaned_text,
+                       (ts >= now() - interval '30 minutes') AS fresh
+                FROM comments
+                WHERE source = %s AND cleaned_text IS NOT NULL
+                """,
+                (src,),
+            )
+            rows = cur.fetchall()
+            total_comments = len(rows)
+            words = Counter()
+            fresh_words = Counter()
+            for row in rows:
+                text, fresh = row["cleaned_text"], row["fresh"]
+                for w in set(re.findall(r"[a-z']{4,}", text or "")):
+                    if w in STOPWORDS:
+                        continue
+                    words[w] += 1
+                    if fresh:
+                        fresh_words[w] += 1
+            # score: real volume + fresh boost (recent mentions count double)
+            scored = [
+                {"topic": w, "count": c, "fresh": fresh_words[w],
+                 "share_pct": round(c * 100 / total_comments, 1) if total_comments else 0,
+                 "score": round(c + fresh_words[w] * 2, 2)}
+                for w, c in words.items() if c >= 3
+            ]
+            scored.sort(key=lambda x: -x["score"])
+            out[src] = scored[:limit]
+            out[f"{src}_comments"] = total_comments
+    return {"trending": out, "sources": sources}
+
+
+class TopicStreamRequest(BaseModel):
+    topic: str
+    source: str = "youtube"   # youtube | x | reddit
+    limit: int = 100          # comments to pull per post/video
+
+
+TOPIC_STREAMS = {}  # topic_key -> {source, topic, posts: [...], started_at}
+
+
+@app.post("/api/topics/stream")
+def topics_stream(req: TopicStreamRequest):
+    """Click a trending topic -> fetch a fresh batch of real comments about it -> Kafka.
+
+    youtube: yt-dlp flat search (fast, keyless) -> comments of the top videos
+    reddit / x: pick fresh posts about the topic from the dataset replay pool
+                (their public APIs are bot-walled / paid), publish matching comments
+    """
+    import fetchers
+    import publisher
+
+    topic = req.topic.strip()
+    if not topic or len(topic) < 3:
+        return {"status": "error", "message": "Topic must be at least 3 characters"}
+    source = (req.source or "youtube").lower()
+    if source not in ("youtube", "x", "reddit"):
+        return {"status": "error", "message": f"Topic streaming supports youtube, x, reddit (got {source!r})"}
+
+    published_total, post_infos = 0, []
+    stream_note = ""
+
+    if source == "youtube":
+        # 1) flat-search YouTube for the topic (no API key, ~2-4s)
+        ytdlp_bin = fetchers._ytdlp_bin()
+        import subprocess
+        raw = subprocess.run(
+            [ytdlp_bin, "--flat-playlist", "--no-warnings", "--playlist-end", "3",
+             "--print", "%(id)s|%(title)s", f"ytsearch3:{topic}"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if raw.returncode != 0:
+            return {"status": "error", "message": f"YouTube search failed: {raw.stderr.strip()[:150]}"}
+        videos = []
+        for line in raw.stdout.splitlines():
+            line = line.strip()
+            if "|" in line and len(line.split("|", 1)[0]) == 11:
+                vid, vtitle = line.split("|", 1)
+                videos.append((vid, vtitle))
+        if not videos:
+            return {"status": "error", "message": f"No YouTube videos found for topic '{topic}'"}
+
+        # 2) fetch comments for the top videos (~5s each)
+        for vid, vtitle in videos:
+            try:
+                post = fetchers.fetch_youtube(f"https://www.youtube.com/watch?v={vid}", limit=min(req.limit, 200))
+                if not post["comments"]:
+                    continue
+                sent = publisher.publish_comments(post["comments"])
+                published_total += sent
+                info = {"post_id": post["post_id"], "post_title": post["post_title"],
+                        "source": "youtube", "comments_fetched": len(post["comments"]),
+                        "comments_published": sent}
+                ANALYZED.add(post["post_id"], info)
+                post_infos.append(info)
+            except Exception:
+                continue  # skip videos whose comments are off
+        stream_note = "fresh YouTube videos + their comments via yt-dlp (keyless)"
+
+    else:
+        # reddit / x: their public APIs are bot-walled (403/521) or paid —
+        # stream FRESH dataset comments matching the topic (real comments, live-scored)
+        topic_words = {w for w in re.findall(r"[a-z']{3,}", topic.lower())}
+        with db() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, author, text, post_id, post_title, ts
+                FROM comments
+                WHERE source = %s
+                ORDER BY ts DESC NULLS LAST
+                LIMIT 8000
+                """,
+                (source,),
+            )
+            rows = cur.fetchall()
+        matches = []
+        seen_texts = set()
+        for row in rows:
+            cid, author = row["id"], row["author"]
+            text, pid, ptitle, ts = row["text"], row["post_id"], row["post_title"], row["ts"]
+            tl = (text or "").lower()
+            if not tl or tl in seen_texts:
+                continue
+            hits = sum(1 for w in topic_words if w in tl)
+            if hits >= 1:
+                matches.append((cid, author, text, pid, ptitle, ts))
+                seen_texts.add(tl)
+                if len(matches) >= min(req.limit, 200):
+                    break
+        if not matches:
+            return {"status": "error", "message": f"No {source} comments about '{topic}' in the pool — try another topic"}
+
+        # publish as a fresh live batch under a topic post id
+        topic_post_id = f"topic-{source}-{re.sub(r'[^a-z0-9]+', '-', topic.lower())[:40]}-{uuid.uuid4().hex[:6]}"
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        comments = [
+            {
+                "id": f"{topic_post_id}-{i}",
+                "source": source,
+                "author": author or "anonymous",
+                "text": text,
+                "post_id": topic_post_id,
+                "post_title": f"Topic: {topic}",
+                "label": None,
+                "ts": now_iso,
+            }
+            for i, (cid, author, text, pid, ptitle, ts) in enumerate(matches)
+        ]
+        sent = publisher.publish_comments(comments)
+        published_total = sent
+        info = {"post_id": topic_post_id, "post_title": f"Topic: {topic}",
+                "source": source, "comments_fetched": len(comments),
+                "comments_published": sent}
+        ANALYZED.add(topic_post_id, info)
+        post_infos.append(info)
+        stream_note = "topic-matched comments from the live replay pool (real comments, re-scored fresh)"
+
+    if not post_infos:
+        return {"status": "error", "message": f"Could not fetch comments for topic '{topic}'"}
+
+    topic_key = f"{source}:{topic.lower()}"
+    TOPIC_STREAMS[topic_key] = {
+        "source": source, "topic": topic,
+        "posts": [p["post_id"] for p in post_infos],
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return {
+        "status": "ok",
+        "topic": topic,
+        "source": source,
+        "posts_analyzed": len(post_infos),
+        "comments_published": published_total,
+        "post_ids": [p["post_id"] for p in post_infos],
+        "stream_note": stream_note,
+        "note": "Comments are streaming through Kafka -> Spark; live scores appear in ~30-60s. "
+                "Open the topic stream page for the real-time feed.",
+    }
+
+
+@app.get("/api/topics/streams")
+def topics_streams():
+    """Recently started topic streams with their live sentiment."""
+    out = []
+    with db() as conn, conn.cursor() as cur:
+        for key, info in TOPIC_STREAMS.items():
+            if not info["posts"]:
+                continue
+            placeholders = ",".join(["%s"] * len(info["posts"]))
+            cur.execute(
+                f"""
+                SELECT {_sentiment_select()}
+                FROM comments WHERE post_id IN ({placeholders})
+                """,
+                info["posts"],
+            )
+            row = dict(cur.fetchone())
+            total = row["total"] or 0
+            out.append({
+                **info,
+                "stream_key": key,
+                "scored": total,
+                "sentiment": _sentiment_payload(row),
+                "avg_score": round(float(row["avg_score"]), 3) if row["avg_score"] is not None else None,
+            })
+    out.sort(key=lambda s: s["started_at"], reverse=True)
+    return {"streams": out, "count": len(out)}
+
+
+# ---------------------------------------------------------------------------
+# Keyword search: enter any word -> fetch every matching comment -> analyze
+# ---------------------------------------------------------------------------
+
+class KeywordSearchRequest(BaseModel):
+    platform: str = "youtube"  # youtube | x | reddit
+    keyword: str
+    limit: int = 100
+
+
+@app.post("/api/keyword-search")
+def keyword_search(req: KeywordSearchRequest):
+    """Search a working platform for a keyword and stream every matching comment.
+
+    youtube: real yt-dlp search for the keyword -> comments of the top videos (live fetch)
+    x / reddit: topic-matched fresh batch from the dataset replay pool (APIs bot-walled)
+    """
+    req_model = TopicStreamRequest(topic=req.keyword, source=req.platform, limit=req.limit)
+    return topics_stream(req_model)
 
 
 # ---------------------------------------------------------------------------
@@ -654,7 +1206,7 @@ def export_csv(
     if source:
         clauses.append("source = %s"); params.append(source)
     if sentiment:
-        clauses.append("vader_label = %s"); params.append(sentiment)
+        clauses.append("llm_label = %s"); params.append(sentiment)
     if q:
         clauses.append("(text ILIKE %s OR cleaned_text ILIKE %s)"); params += [f"%{q}%", f"%{q}%"]
     if post_id:
@@ -664,7 +1216,8 @@ def export_csv(
         cur.execute(
             f"""
             SELECT id, source, author, text, label, vader_label, vader_score,
-                   vader_positive, vader_negative, vader_neutral, bert_label, bert_score, ts
+                   vader_positive, vader_negative, vader_neutral, bert_label, bert_score,
+                   llm_label, llm_score, ts
             FROM comments WHERE {' AND '.join(clauses)}
             ORDER BY ts DESC NULLS LAST LIMIT %s
             """,
@@ -675,7 +1228,8 @@ def export_csv(
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(["id", "source", "author", "text", "dataset_label", "vader_label", "vader_score",
-                     "vader_pos", "vader_neg", "vader_neu", "bert_label", "bert_score", "ts"])
+                     "vader_pos", "vader_neg", "vader_neu", "bert_label", "bert_score",
+                     "llm_label", "llm_score", "ts"])
     for row in rows:
         writer.writerow([c.isoformat() if hasattr(c, "isoformat") else c for c in row])
     buffer.seek(0)
