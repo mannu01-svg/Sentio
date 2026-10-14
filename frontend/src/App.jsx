@@ -5,7 +5,11 @@ import Auth from "./pages/Auth"
 import Dashboard from "./pages/Dashboard"
 import Live from "./pages/Live"
 import Analyze from "./pages/Analyze"
+import PlatformAnalyze from "./pages/PlatformAnalyze"
 import AnalyzeDetail from "./pages/AnalyzeDetail"
+import AccountDetail from "./pages/AccountDetail"
+import ThreadsCallback from "./pages/ThreadsCallback"
+import TopicStream from "./pages/TopicStream"
 import Trends from "./pages/Trends"
 import Models from "./pages/Models"
 import Pipeline from "./pages/Pipeline"
@@ -29,11 +33,15 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Auth />} />
       <Route path="/signup" element={<Auth />} />
+      <Route path="/threads/callback" element={<ThreadsCallback />} />
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
       <Route path="/live" element={<Protected><Live /></Protected>} />
       <Route path="/analyze" element={<Protected><Analyze /></Protected>} />
-      <Route path="/analyze/:postId" element={<Protected><AnalyzeDetail /></Protected>} />
+      <Route path="/analyze/post/:postId" element={<Protected><AnalyzeDetail /></Protected>} />
+      <Route path="/analyze/:platform" element={<Protected><PlatformAnalyze /></Protected>} />
+      <Route path="/analyze/account/:platform/:handle" element={<Protected><AccountDetail /></Protected>} />
+      <Route path="/topics/:source/:topic" element={<Protected><TopicStream /></Protected>} />
       <Route path="/trends" element={<Protected><Trends /></Protected>} />
       <Route path="/models" element={<Protected><Models /></Protected>} />
       <Route path="/pipeline" element={<Protected><Pipeline /></Protected>} />

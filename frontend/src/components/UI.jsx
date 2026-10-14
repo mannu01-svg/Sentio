@@ -83,7 +83,12 @@ export function AppShell({ children }) {
   const { theme, toggle } = useTheme()
   const navigate = useNavigate()
   const { pathname } = useLocation()
-  const title = TITLES[pathname] || (pathname.startsWith("/analyze/") ? "Post Analysis" : "Sentio")
+  const title =
+    TITLES[pathname] ||
+    (pathname.startsWith("/topics/") ? "Topic Stream" :
+     pathname.startsWith("/analyze/account/") ? "Account Analysis" :
+     pathname.startsWith("/analyze/post/") ? "Post Analysis" :
+     pathname.startsWith("/analyze/") ? "Analyze" : "Sentio")
 
   return (
     <div className="app-frame">
@@ -128,7 +133,22 @@ export function AppShell({ children }) {
       {/* main column */}
       <div className="main-col">
         <header className="topbar">
-          <h1 className="text-[15px] font-semibold tracking-tight">{title}</h1>
+          <div className="flex items-center gap-2">
+            {pathname !== "/dashboard" && (
+              <button
+                className="icon-btn"
+                onClick={() => navigate(-1)}
+                title="Back"
+                aria-label="Go back"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M19 12H5M12 19l-7-7 7-7" />
+                </svg>
+              </button>
+            )}
+            <h1 className="text-[15px] font-semibold tracking-tight">{title}</h1>
+          </div>
           <LiveStatusDot />
         </header>
         {/* mobile nav */}
