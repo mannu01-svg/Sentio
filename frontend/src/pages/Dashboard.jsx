@@ -1,11 +1,15 @@
-import { Link } from "react-router-dom"
+import { Link, useNavigate } from "react-router-dom"
+import { useState } from "react"
 import {
   Line, LineChart, Pie, PieChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid,
 } from "recharts"
-import { fetchAlerts, fetchComments, fetchPipeline, fetchSummary, fetchTimeline } from "../lib/api"
+import {
+  fetchAlerts, fetchComments, fetchPipeline, fetchSummary, fetchTimeline, fetchTrending,
+  fetchStreamStatus, startLiveStream, stopLiveStream,
+} from "../lib/api"
 import { usePolling } from "../lib/hooks"
 import { Card, SectionTitle, SentimentChip, Skeleton, EmptyState } from "../components/UI"
-import { PlatformBadge } from "../components/Brand"
+import { PlatformBadge, PLATFORMS } from "../components/Brand"
 
 const tooltipStyle = {
   backgroundColor: "var(--panel-solid)",
@@ -30,9 +34,24 @@ export default function Dashboard() {
   const timeline = usePolling(() => fetchTimeline(90))
   const alerts = usePolling(fetchAlerts, [], 8000)
   const pipeline = usePolling(fetchPipeline, [], 6000)
-  const feed = usePolling(() => fetchComments({ limit: 6 }), [], 4000)
+  const feed = usePolling(() => fetchComments({ limit: 60 }), [], 4000)
+  const trending = usePolling(() => fetchTrending(), [], 12000)
+  const stream = usePolling(fetchStreamStatus, [], 3000)
 
   const s = summary.data?.sentiment ?? {}
+  // round-robin interleave sources so one batch (e.g. threads) can't flood the whole card
+  const feedRows = feed.data?.comments ?? []
+  const bySource = {}
+  feedRows.forEach((c) => { (bySource[c.source] ??= []).push(c) })
+  const mixedFeed = []
+  let added = true
+  while (mixedFeed.length < 18 && added) {
+    added = false
+    for (const rows of Object.values(bySource)) {
+      if (rows.length) { mixedFeed.push(rows.shift()); added = true }
+      if (mixedFeed.length >= 18) break
+    }
+  }
   const windows = (timeline.data?.windows ?? []).map((w) => ({
     time: new Date(w.window_start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     Positive: w.pos_pct, Negative: w.neg_pct, Neutral: w.neu_pct,
@@ -40,12 +59,15 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-end justify-between">
+      <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-extrabold">Dashboard</h1>
           <p className="text-xs" style={{ color: "var(--text-soft)" }}>Your social pulse at a glance</p>
         </div>
-        <Link to="/analyze" className="btn btn-primary">🔗 Analyze a post</Link>
+        <div className="flex items-center gap-2">
+          <GoLiveButton stream={stream.data} />
+          <Link to="/analyze" className="btn btn-primary">🔗 Analyze a post</Link>
+        </div>
       </div>
 
       {alerts.data?.alert && (
@@ -64,15 +86,17 @@ export default function Dashboard() {
       )}
 
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <Kpi label="Comments processed" value={(summary.data?.total ?? 0).toLocaleString()} tone="var(--accent)" sub={`flow: ${pipeline.data?.flow_per_min ?? 0}/min`} />
-        <Kpi label="Positive" value={`${s.positive_pct ?? 0}%`} tone="var(--positive)" sub={`${(s.positive ?? 0).toLocaleString()} comments`} />
-        <Kpi label="Negative" value={`${s.negative_pct ?? 0}%`} tone="var(--negative)" sub={`${(s.negative ?? 0).toLocaleString()} comments`} />
-        <Kpi label="Neutral" value={`${s.neutral_pct ?? 0}%`} tone="var(--neutral)" sub={`${(s.neutral ?? 0).toLocaleString()} comments`} />
+        <Kpi label="Comments processed" value={(summary.data?.total ?? 0).toLocaleString()} tone="var(--accent)" sub={`flow: ${pipeline.data?.flow_per_min ?? 0}/min · live LLM-scored`} />
+        <Kpi label="Positive" value={`${s.positive_pct ?? 0}%`} tone="var(--positive)" sub={`${(s.positive ?? 0).toLocaleString()} comments · LLM`} />
+        <Kpi label="Negative" value={`${s.negative_pct ?? 0}%`} tone="var(--negative)" sub={`${(s.negative ?? 0).toLocaleString()} comments · LLM`} />
+        <Kpi label="Neutral" value={`${s.neutral_pct ?? 0}%`} tone="var(--neutral)" sub={`${(s.neutral ?? 0).toLocaleString()} comments · LLM`} />
       </div>
+
+      <TrendingTopics data={trending.data} />
 
       <div className="grid gap-4 xl:grid-cols-[1.6fr_1fr]">
         <Card className="p-5">
-          <SectionTitle title="Sentiment over time" detail="Share of comments per 1-minute window (VADER)" />
+          <SectionTitle title="Sentiment over time" detail="Share of comments per 1-minute window (LLM-scored)" />
           {timeline.data ? (
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
@@ -91,7 +115,7 @@ export default function Dashboard() {
         </Card>
 
         <Card className="p-5">
-          <SectionTitle title="Distribution" detail="All processed comments" />
+          <SectionTitle title="Distribution" detail="All processed comments · scored by the tweet-trained LLM" />
           {summary.data ? (
             <div className="relative mx-auto h-56 w-56">
               <ResponsiveContainer width="100%" height="100%">
@@ -129,8 +153,8 @@ export default function Dashboard() {
             detail="Straight from the Spark stream"
             right={<Link to="/live" className="text-xs font-semibold" style={{ color: "var(--accent)" }}>Open live feed →</Link>}
           />
-          <div className="space-y-2">
-            {(feed.data?.comments ?? []).map((c) => (
+          <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
+            {mixedFeed.map((c) => (
               <div key={c.id} className="flex items-center gap-3 rounded-xl border p-3" style={{ borderColor: "var(--border-soft)" }}>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
@@ -141,7 +165,7 @@ export default function Dashboard() {
                   </div>
                   <p className="mt-1 line-clamp-1 text-xs">{c.text}</p>
                 </div>
-                <SentimentChip label={c.vader_label} />
+                <SentimentChip label={c.llm_label} />
               </div>
             ))}
             {feed.data && feed.data.comments.length === 0 && <EmptyState text="Waiting for scored comments…" />}
@@ -167,5 +191,156 @@ export default function Dashboard() {
         </Card>
       </div>
     </div>
+  )
+}
+
+const TRENDING_SOURCES = [
+  { id: "youtube", name: "YouTube", hint: "real-time search + comments" },
+  { id: "x", name: "X (Twitter)", hint: "topic-matched live batch" },
+  { id: "reddit", name: "Reddit", hint: "topic-matched live batch" },
+]
+
+function TrendingTopics({ data }) {
+  const navigate = useNavigate()
+  const [starting, setStarting] = useState(null)
+  const [error, setError] = useState(null)
+
+  const startStream = async (source, topic) => {
+    if (starting) return
+    setStarting(`${source}:${topic}`); setError(null)
+    try {
+      const res = await fetch("/api/topics/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ topic, source, limit: 100 }),
+      }).then((r) => r.json())
+      if (res.status === "error") setError(res.message)
+      else navigate(`/topics/${encodeURIComponent(source)}/${encodeURIComponent(topic)}`)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setStarting(null)
+    }
+  }
+
+  return (
+    <Card className="p-5">
+      <SectionTitle
+        title="Trending topics"
+        detail="Top keywords per platform over every stored comment — click one for a real-time sentiment stream"
+      />
+      {error && <p className="mb-2 text-xs text-red-400">{error}</p>}
+      <div className="grid gap-4 lg:grid-cols-3">
+        {TRENDING_SOURCES.map(({ id, name, hint }) => {
+          const meta = PLATFORMS.find((p) => p.id === id)
+          const topics = data?.trending?.[id] ?? []
+          const totalComments = data?.trending?.[`${id}_comments`] ?? 0
+          const Logo = meta?.Logo
+          return (
+            <div key={id}>
+              <div className="mb-2 flex items-center gap-2">
+                {Logo && <Logo size={14} />}
+                <span className="text-xs font-bold">{name}</span>
+                <span className="ml-auto text-[10px]" style={{ color: "var(--text-faint)" }}>
+                  {totalComments > 0 ? `${totalComments.toLocaleString()} comments scanned` : hint}
+                </span>
+              </div>
+              {topics.length === 0 ? (
+                <p className="text-[11px]" style={{ color: "var(--text-faint)" }}>Building topic list…</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {topics.slice(0, 6).map((t, i) => {
+                    const key = `${id}:${t.topic}`
+                    const isStarting = starting === key
+                    const maxCount = topics[0]?.count ?? 1
+                    return (
+                      <button
+                        key={t.topic}
+                        onClick={() => startStream(id, t.topic)}
+                        disabled={!!starting}
+                        className="group flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors hover:bg-white/5 disabled:opacity-60"
+                        style={{ borderColor: "var(--border-soft)" }}
+                      >
+                        <span className="w-4 font-mono text-[10px]" style={{ color: "var(--text-faint)" }}>{i + 1}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="line-clamp-1 block text-xs font-semibold">{t.topic}</span>
+                          <span className="mt-1 block h-1 overflow-hidden rounded-full" style={{ background: "var(--border-soft)" }}>
+                            <span
+                              className="block h-full rounded-full"
+                              style={{ width: `${Math.max((t.count * 100) / maxCount, 4)}%`, background: "linear-gradient(90deg, var(--accent), var(--accent2))" }}
+                            />
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-right">
+                          <span className="block font-mono text-[11px] font-bold">{t.count.toLocaleString()}</span>
+                          <span className="block font-mono text-[9px]" style={{ color: "var(--text-faint)" }}>{t.share_pct}% of {id === "youtube" ? "YT" : id === "x" ? "X" : "r"}</span>
+                        </span>
+                        <span className="shrink-0 text-[10px] opacity-0 transition-opacity group-hover:opacity-100" style={{ color: "var(--accent)" }}>
+                          {isStarting ? "…" : "▶ stream"}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      <p className="mt-3 text-[10px]" style={{ color: "var(--text-faint)" }}>
+        Counts are real mentions across every stored comment (recent mentions score 2×).
+        YouTube topics pull fresh videos + comments live via yt-dlp search; X/Reddit topics stream
+        topic-matched comments through the live replay pool — all scored by Kafka → Spark in ~30–60s.
+      </p>
+    </Card>
+  )
+}
+
+function GoLiveButton({ stream }) {
+  const [busy, setBusy] = useState(false)
+  const live = stream?.live
+  const secondsLeft = stream?.seconds_left ?? 0
+
+  const toggle = async () => {
+    setBusy(true)
+    try {
+      if (live) await stopLiveStream()
+      else await startLiveStream({ minutes: 3, rate: 40 })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!stream) return <div className="h-9 w-32 animate-pulse rounded-lg" style={{ background: "var(--border-soft)" }} />
+
+  if (live) {
+    return (
+      <button
+        onClick={toggle}
+        disabled={busy}
+        className="flex items-center gap-2 rounded-lg border px-4 py-2 text-xs font-bold transition-colors disabled:opacity-70"
+        style={{ borderColor: "var(--positive)", background: "color-mix(in srgb, var(--positive) 12%, transparent)", color: "var(--positive)" }}
+      >
+        <span className="relative flex size-2.5">
+          <span className="absolute inline-flex size-full animate-ping rounded-full opacity-60" style={{ background: "var(--positive)" }} />
+          <span className="relative inline-flex size-2 rounded-full" style={{ background: "var(--positive)" }} />
+        </span>
+        LIVE · {Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, "0")}
+        <span className="text-[10px] font-medium opacity-70">stop</span>
+      </button>
+    )
+  }
+
+  return (
+    <button
+      onClick={toggle}
+      disabled={busy}
+      className="flex items-center gap-2 rounded-lg border px-4 py-2 text-xs font-bold transition-colors hover:bg-white/5 disabled:opacity-70"
+      style={{ borderColor: "var(--border)" }}
+    >
+      <span className="text-sm">🔴</span>
+      Go live
+      <span className="text-[10px] font-medium" style={{ color: "var(--text-faint)" }}>3 min · 40/s</span>
+    </button>
   )
 }
