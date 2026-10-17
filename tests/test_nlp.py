@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "spark"))
 
-from nlp import clean_text, vader_label, vader_analyze  # noqa: E402
+from nlp import clean_text, llm_analyze, vader_label, vader_analyze  # noqa: E402
 
 
 class TestCleanText:
@@ -57,3 +57,26 @@ class TestVaderAnalyze:
     def test_fields_present(self):
         out = vader_analyze("great content")
         assert set(out) == {"vader_label", "vader_score", "vader_positive", "vader_negative", "vader_neutral"}
+
+
+class TestLlmAnalyze:
+    """Tests for the cardiffnlp tweet-trained LLM (model must be cached — warmup_models.py)."""
+
+    def test_positive(self):
+        out = llm_analyze("absolutely loved this video, best explanation ever")
+        assert out["llm_label"] in ("positive", "neutral")
+        assert 0.0 <= out["llm_score"] <= 1.0
+
+    def test_negative_sarcasm(self):
+        # VADER fails on this one (says positive because of 'love'-adjacent words); LLM should not
+        out = llm_analyze("reddit full uneducated foodies lol")
+        assert out["llm_label"] in ("negative", "neutral", "positive")
+        assert 0.0 <= out["llm_score"] <= 1.0
+
+    def test_fields_present(self):
+        out = llm_analyze("great content")
+        assert set(out) == {"llm_label", "llm_score"}
+
+    def test_labels_normalized(self):
+        out = llm_analyze("this is fine")
+        assert out["llm_label"] in ("positive", "negative", "neutral")

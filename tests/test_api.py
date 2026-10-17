@@ -34,7 +34,7 @@ def test_comments_filters():
     body = res.json()
     assert body["count"] <= 5
     for comment in body["comments"]:
-        assert comment["vader_label"] == "positive"
+        assert comment["llm_label"] == "positive"
 
 
 def test_words():
