@@ -14,7 +14,7 @@ export default function Live() {
 
   const comments = feed.data?.comments ?? []
   const counts = { positive: 0, negative: 0, neutral: 0 }
-  comments.forEach((c) => { if (counts[c.vader_label] != null) counts[c.vader_label]++ })
+  comments.forEach((c) => { if (counts[c.llm_label] != null) counts[c.llm_label]++ })
 
   return (
     <div className="space-y-4">
@@ -70,15 +70,16 @@ export default function Live() {
               <span className="font-mono text-[10px]" style={{ color: "var(--text-faint)" }}>
                 {c.ts ? new Date(c.ts).toLocaleTimeString() : ""}
               </span>
-              <span className="ml-auto flex items-center gap-3">
-                <SentimentChip label={c.vader_label} />
-                {c.bert_label && <SentimentChip label={c.bert_label} />}
+              <span className="ml-auto flex items-center gap-2">
+                <SentimentChip label={c.llm_label} />
+                <span className="font-mono text-[10px]" style={{ color: "var(--text-faint)" }}>
+                  {c.llm_score != null ? Number(c.llm_score).toFixed(2) : ""}
+                </span>
               </span>
             </div>
             <p className="mt-2 text-[13px] leading-relaxed">{c.text}</p>
             <div className="mt-2 flex items-center gap-4 font-mono text-[10px]" style={{ color: "var(--text-faint)" }}>
-              <span>vader {c.vader_score != null ? Number(c.vader_score).toFixed(2) : "—"}</span>
-              <span>bert {c.bert_score != null ? Number(c.bert_score).toFixed(2) : "—"}</span>
+              <span>LLM · cardiffnlp tweet-RoBERTa</span>
               {c.post_id && <span className="rounded px-1.5 py-0.5" style={{ background: "var(--chip)" }}>post: {c.post_id}</span>}
             </div>
           </Card>

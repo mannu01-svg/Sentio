@@ -3,7 +3,7 @@ import { fetchComments, fetchPosts, fetchSummary } from "../lib/api"
 import { usePolling } from "../lib/hooks"
 import { Card, SectionTitle, Skeleton, EmptyState } from "../components/UI"
 import {
-  PLATFORMS, RedditLogo, YouTubeLogo, InstagramLogo, FacebookLogo, XLogo,
+  PLATFORMS, RedditLogo, YouTubeLogo, InstagramLogo, FacebookLogo, XLogo, ThreadsLogo,
 } from "../components/Brand"
 
 const DATASETS = [
@@ -20,17 +20,22 @@ const DATASETS = [
   {
     source: "instagram", Logo: InstagramLogo, name: "Instagram",
     dataset: "CityNet IG Comments Sentiment (vrashad)",
-    rows: 1301, labels: "negative / neutral / positive", connected: true,
+    rows: 1149, labels: "negative / neutral / positive", connected: true,
   },
   {
     source: "facebook", Logo: FacebookLogo, name: "Facebook",
     dataset: "Social Media Sentiments Analysis (kashishparmar02)",
-    rows: 231, labels: "mapped from 99 emotion labels", connected: true,
+    rows: 34315, labels: "mapped from 99 emotion labels", connected: true,
   },
   {
     source: "x", Logo: XLogo, name: "X (Twitter)",
     dataset: "Sentiment140 — 1.6M tweets (kazanova), 20k sample",
     rows: 20000, labels: "positive / negative", connected: true,
+  },
+  {
+    source: "threads", Logo: ThreadsLogo, name: "Threads",
+    dataset: "Threads preview sample (1.5k) + Threads API (graph.threads.net) — OAuth live monitoring is future scope",
+    rows: 1500, labels: "VADER + DistilBERT + LLM", connected: false,
   },
 ]
 
@@ -44,7 +49,7 @@ export default function Sources() {
       <div>
         <h1 className="text-2xl font-extrabold">Sources</h1>
         <p className="text-xs" style={{ color: "var(--text-soft)" }}>
-          Five platforms, Kaggle datasets + live link fetching — one pipeline
+          Six platforms — Kaggle datasets, live link fetching, OAuth-ready (Threads/IG/FB future scope) — one pipeline
         </p>
       </div>
 

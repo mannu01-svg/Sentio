@@ -45,7 +45,7 @@ export default function Models() {
       <div>
         <h1 className="text-2xl font-extrabold">Model Comparison</h1>
         <p className="text-xs" style={{ color: "var(--text-soft)" }}>
-          Classic NLP (VADER lexicon) vs AI transformer (DistilBERT-SST2) — on every comment, side by side
+          Three generations of NLP: VADER lexicon → DistilBERT transformer → tweet-trained LLM — on every comment, side by side
         </p>
       </div>
 
@@ -55,34 +55,73 @@ export default function Models() {
         <>
           <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
             <Card hover className="p-5">
-              <div className="text-xs font-semibold" style={{ color: "var(--text-soft)" }}>Agreement</div>
-              <div className="count-in mt-2 font-mono text-3xl font-extrabold grad-text">{d.agreement_pct}%</div>
-              <div className="mt-1 text-[11px]" style={{ color: "var(--text-faint)" }}>{d.agree} of {d.compared} agree</div>
+              <div className="text-xs font-semibold" style={{ color: "var(--text-soft)" }}>VADER vs LLM agreement</div>
+              <div className="count-in mt-2 font-mono text-3xl font-extrabold grad-text">{d.vader_vs_llm_agreement_pct}%</div>
+              <div className="mt-1 text-[11px]" style={{ color: "var(--text-faint)" }}>{d.agree_vader_llm} of {d.compared} agree</div>
             </Card>
             <Card hover className="p-5">
-              <div className="text-xs font-semibold" style={{ color: "var(--text-soft)" }}>Compared</div>
-              <div className="count-in mt-2 font-mono text-3xl font-extrabold">{d.compared.toLocaleString()}</div>
-              <div className="mt-1 text-[11px]" style={{ color: "var(--text-faint)" }}>recent comments</div>
+              <div className="text-xs font-semibold" style={{ color: "var(--text-soft)" }}>DistilBERT vs LLM agreement</div>
+              <div className="count-in mt-2 font-mono text-3xl font-extrabold" style={{ color: "var(--accent3)" }}>
+                {d.bert_vs_llm_agreement_pct != null ? `${d.bert_vs_llm_agreement_pct}%` : "—"}
+              </div>
+              <div className="mt-1 text-[11px]" style={{ color: "var(--text-faint)" }}>
+                {d.bert_vs_llm_agreement_pct != null
+                  ? `${(summary.data?.bert_scored ?? 0).toLocaleString()} bert-scored comments`
+                  : "no DistilBERT rows in the current window"}
+              </div>
             </Card>
             <Card hover className="p-5">
-              <div className="text-xs font-semibold" style={{ color: "var(--text-soft)" }}>Label accuracy (VADER)</div>
+              <div className="text-xs font-semibold" style={{ color: "var(--text-soft)" }}>All 3 agree</div>
               <div className="count-in mt-2 font-mono text-3xl font-extrabold" style={{ color: "var(--positive)" }}>
-                {d.label_accuracy_vader_pct != null ? `${d.label_accuracy_vader_pct}%` : "—"}
+                {d.all_three_agreement_pct}%
+              </div>
+              <div className="mt-1 text-[11px]" style={{ color: "var(--text-faint)" }}>consensus on recent comments</div>
+            </Card>
+            <Card hover className="p-5">
+              <div className="text-xs font-semibold" style={{ color: "var(--text-soft)" }}>Label accuracy (LLM)</div>
+              <div className="count-in mt-2 font-mono text-3xl font-extrabold" style={{ color: "var(--positive)" }}>
+                {d.label_accuracy_llm_pct != null ? `${d.label_accuracy_llm_pct}%` : "—"}
               </div>
               <div className="mt-1 text-[11px]" style={{ color: "var(--text-faint)" }}>vs dataset ground truth</div>
             </Card>
-            <Card hover className="p-5">
-              <div className="text-xs font-semibold" style={{ color: "var(--text-soft)" }}>BERT coverage</div>
-              <div className="count-in mt-2 font-mono text-3xl font-extrabold" style={{ color: "var(--cyan)" }}>
-                {summary.data ? `${Math.round((summary.data.bert_scored / Math.max(summary.data.total, 1)) * 100)}%` : "—"}
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <Card hover className="p-4">
+              <div className="flex items-center justify-between text-[11px]">
+                <span style={{ color: "var(--text-soft)" }}>VADER coverage</span>
+                <span className="font-mono font-bold">{summary.data ? `${Math.round(((summary.data.vader_scored ?? 0) / Math.max(summary.data.total, 1)) * 100)}%` : "—"}</span>
               </div>
-              <div className="mt-1 text-[11px]" style={{ color: "var(--text-faint)" }}>{(summary.data?.bert_scored ?? 0).toLocaleString()} scored</div>
+              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full" style={{ background: "var(--border-soft)" }}>
+                <div className="h-full rounded-full" style={{ width: summary.data ? `${(summary.data.vader_scored ?? 0) * 100 / Math.max(summary.data.total, 1)}%` : "0%", background: "var(--cyan)" }} />
+              </div>
+              <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-faint)" }}>{(summary.data?.vader_scored ?? 0).toLocaleString()} scored</div>
+            </Card>
+            <Card hover className="p-4">
+              <div className="flex items-center justify-between text-[11px]">
+                <span style={{ color: "var(--text-soft)" }}>DistilBERT coverage</span>
+                <span className="font-mono font-bold">{summary.data ? `${Math.round(((summary.data.bert_scored ?? 0) / Math.max(summary.data.total, 1)) * 100)}%` : "—"}</span>
+              </div>
+              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full" style={{ background: "var(--border-soft)" }}>
+                <div className="h-full rounded-full" style={{ width: summary.data ? `${(summary.data.bert_scored ?? 0) * 100 / Math.max(summary.data.total, 1)}%` : "0%", background: "var(--accent3)" }} />
+              </div>
+              <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-faint)" }}>{(summary.data?.bert_scored ?? 0).toLocaleString()} scored</div>
+            </Card>
+            <Card hover className="p-4">
+              <div className="flex items-center justify-between text-[11px]">
+                <span style={{ color: "var(--text-soft)" }}>LLM coverage ★</span>
+                <span className="font-mono font-bold" style={{ color: "var(--positive)" }}>{summary.data ? `${Math.round(((summary.data.llm_scored ?? 0) / Math.max(summary.data.total, 1)) * 100)}%` : "—"}</span>
+              </div>
+              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full" style={{ background: "var(--border-soft)" }}>
+                <div className="h-full rounded-full" style={{ width: summary.data ? `${(summary.data.llm_scored ?? 0) * 100 / Math.max(summary.data.total, 1)}%` : "0%", background: "var(--positive)" }} />
+              </div>
+              <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-faint)" }}>{(summary.data?.llm_scored ?? 0).toLocaleString()} scored</div>
             </Card>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-2">
+          <div className="grid gap-4 xl:grid-cols-3">
             <Card className="p-5">
-              <SectionTitle title="How they differ" detail="The two paradigms, explained" />
+              <SectionTitle title="How they differ" detail="Three generations of NLP" />
               <div className="space-y-3">
                 <div className="rounded-xl border p-4" style={{ borderColor: "var(--border-soft)" }}>
                   <div className="text-sm font-bold" style={{ color: "var(--cyan)" }}>VADER — lexicon & rules</div>
@@ -93,45 +132,56 @@ export default function Models() {
                   </p>
                 </div>
                 <div className="rounded-xl border p-4" style={{ borderColor: "var(--border-soft)" }}>
-                  <div className="text-sm font-bold" style={{ color: "var(--accent3)" }}>DistilBERT — transformer (AI)</div>
+                  <div className="text-sm font-bold" style={{ color: "var(--accent3)" }}>DistilBERT — transformer</div>
                   <p className="mt-1.5 text-xs leading-relaxed" style={{ color: "var(--text-soft)" }}>
                     A 66M-parameter BERT distilled to 40% smaller / 60% faster, fine-tuned on SST-2.
                     Context-aware — understands "not good" the way a lexicon cannot. Binary
                     (positive/negative, no neutral class — visible in its errors).
                   </p>
                 </div>
+                <div className="rounded-xl border p-4" style={{ borderColor: "var(--positive)" }}>
+                  <div className="text-sm font-bold" style={{ color: "var(--positive)" }}>RoBERTa LLM — tweet-trained ★</div>
+                  <p className="mt-1.5 text-xs leading-relaxed" style={{ color: "var(--text-soft)" }}>
+                    cardiffnlp/twitter-roberta-base-sentiment-latest — a 124M-parameter RoBERTa fine-tuned
+                    on <strong>124 million real tweets</strong>. Understands slang, emoji semantics and
+                    sarcasm patterns natively. 3-class (positive/neutral/negative). The authoritative
+                    score for social-media comments.
+                  </p>
+                </div>
               </div>
             </Card>
 
             <Card className="p-5">
-              <SectionTitle title="Disagreement examples" detail="Where the two models diverge — the interesting cases" />
+              <SectionTitle title="Where the LLM corrects VADER" detail="Lexicon fails on sarcasm & slang — the LLM resolves it" />
               <div className="space-y-2">
-                {(d.disagreement_examples ?? []).slice(0, 6).map((ex, i) => (
+                {(d.llm_corrections ?? []).slice(0, 7).map((ex, i) => (
                   <div key={i} className="rounded-xl border p-3" style={{ borderColor: "var(--border-soft)" }}>
                     <p className="line-clamp-2 text-xs leading-relaxed">"{ex.text}"</p>
                     <div className="mt-2 flex items-center gap-2">
                       <span className="text-[10px]" style={{ color: "var(--text-faint)" }}>vader {ex.vader_score?.toFixed(2)}</span>
                       <SentimentChip label={ex.vader} />
-                      <span className="text-[10px]" style={{ color: "var(--text-faint)" }}>vs</span>
-                      <SentimentChip label={ex.bert} />
+                      <span className="text-[10px]" style={{ color: "var(--text-faint)" }}>→ LLM</span>
+                      <SentimentChip label={ex.llm} />
                     </div>
                   </div>
                 ))}
-                {(d.disagreement_examples ?? []).length === 0 && <EmptyState text="Perfect agreement in the current window." />}
+                {(d.llm_corrections ?? []).length === 0 && <EmptyState text="VADER and LLM fully agree in the current window." />}
               </div>
             </Card>
-          </div>
 
-          <Card className="p-5">
-            <SectionTitle title="Why this panel matters" detail="One-liner for your viva" />
-            <p className="text-xs leading-relaxed" style={{ color: "var(--text-soft)" }}>
-              "We don't just predict sentiment — we <strong style={{ color: "var(--text)" }}>compare two paradigms live</strong>,
-              quantify their agreement ({d.agreement_pct}% on {d.compared.toLocaleString()} comments), and
-              evaluate both against the dataset's ground-truth labels
-              {d.label_accuracy_vader_pct != null ? ` (VADER: ${d.label_accuracy_vader_pct}% accuracy)` : ""}.
-              The disagreement examples are surfaced for human inspection — disagreement isn't error, it's signal."
-            </p>
-          </Card>
+            <Card className="p-5">
+              <SectionTitle title="Why this panel matters" detail="One-liner for your viva" />
+              <p className="text-xs leading-relaxed" style={{ color: "var(--text-soft)" }}>
+                "We run <strong style={{ color: "var(--text)" }}>three generations of NLP live</strong>: a lexicon
+                (VADER), a distilled transformer (DistilBERT), and a tweet-trained LLM (RoBERTa). We quantify
+                their agreement ({d.vader_vs_llm_agreement_pct}% VADER-vs-LLM on {d.compared.toLocaleString()} comments)
+                and evaluate against dataset ground truth
+                {d.label_accuracy_llm_pct != null ? ` (LLM: ${d.label_accuracy_llm_pct}% vs VADER: ${d.label_accuracy_vader_pct ?? "—"}%)` : ""}.
+                The LLM's corrections of the lexicon — sarcasm, slang, emoji — are surfaced for inspection:
+                disagreement isn't error, it's the finding."
+              </p>
+            </Card>
+          </div>
         </>
       )}
     </div>
