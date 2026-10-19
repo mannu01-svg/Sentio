@@ -47,8 +47,10 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 # smoke mode: SKIP_BERT=1 ./run_spark.sh
 
 # 4. data: put a Kaggle CSV at data/raw/reddit.csv (see data/README.md)
-#    or use the bundled sample:
-python producer/producer.py --file data/sample_comments.csv --rate 10 --loop
+#    or use the bundled sample. The producer seeds one pass, then idles:
+python producer/producer.py --file data/sample_comments.csv --seed 50
+#    trigger live bursts (the dashboard's "Go live" button does this):
+curl -X POST localhost:8000/api/stream/live -H 'Content-Type: application/json' -d '{"minutes":3,"rate":40}'
 
 # 5. API
 .venv/bin/uvicorn api.main:app --port 8000     # docs at /docs
@@ -99,7 +101,7 @@ Producer auto-detects common column names (`comment/text/CONTENT`, `label/sentim
 
 ## Project structure
 ```
-producer/producer.py      CSV → Kafka replay (rate/loop/shuffle)
+producer/producer.py      CSV → Kafka replay (seed + live bursts on demand)
 spark/nlp.py              VADER + DistilBERT scoring (unit tested)
 spark/streaming_job.py    Kafka → clean → score → windows → sinks
 api/main.py               FastAPI: /api/summary timeline comments words compare

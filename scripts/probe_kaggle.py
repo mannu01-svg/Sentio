@@ -11,10 +11,19 @@ import zipfile
 
 import requests
 
-TOK = None
-for line in open(".env"):
-    if line.strip().startswith("Kaggle API token"):
-        TOK = line.split("=", 1)[1].strip()
+TOK = os.getenv("KAGGLE_API_TOKEN")
+if not TOK:
+    for env_file in (".env.local", ".env"):
+        if os.path.exists(env_file):
+            for line in open(env_file):
+                line = line.strip()
+                if line.startswith("KAGGLE_API_TOKEN="):
+                    TOK = line.split("=", 1)[1].strip()
+                    break
+        if TOK:
+            break
+if not TOK:
+    sys.exit("KAGGLE_API_TOKEN not set — add it to .env.local or export it")
 H = {"Authorization": f"Bearer {TOK}"}
 BASE = "https://www.kaggle.com/api/v1"
 OUT = "/tmp/opencode/kaggle_probe"
