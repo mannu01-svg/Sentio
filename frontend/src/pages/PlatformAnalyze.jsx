@@ -178,6 +178,8 @@ function PasteForm() {
   const [title, setTitle] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [done, setDone] = useState(null)
+  const navigate = useNavigate()
 
   const submit = async () => {
     const lines = text.split("\n").map((l) => l.trim()).filter(Boolean)
@@ -186,7 +188,11 @@ function PasteForm() {
     try {
       const res = await analyzePost({ url: lines.join("\n"), mode: "paste", limit: lines.length, title: title.trim() || "Pasted comments" })
       if (res.status === "error") setError(res.message)
-      else setText("")
+      else {
+        setDone({ postId: res.post_id, count: res.comments_published })
+        setText("")
+        setTitle("")
+      }
     } catch (e) {
       setError(e.message)
     } finally {
@@ -196,6 +202,27 @@ function PasteForm() {
 
   return (
     <Card className="p-5">
+      {done && (
+        <div className="mb-3 rounded-xl border p-4" style={{ borderColor: "var(--positive)" }}>
+          <div className="flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full" style={{ background: "var(--positive)" }} />
+            <span className="text-sm font-bold">
+              {done.count} comments streaming through the pipeline
+            </span>
+          </div>
+          <p className="mt-1 text-xs" style={{ color: "var(--text-soft)" }}>
+            Kafka → Spark → LLM scoring — verdicts appear in ~30–60s.
+          </p>
+          <div className="mt-2.5 flex flex-wrap gap-2">
+            <button className="btn text-xs" onClick={() => navigate(`/analyze/post/${done.postId}`)}>
+              📊 Open the analysis page
+            </button>
+            <button className="btn text-xs" onClick={() => navigate("/live")}>
+              🔴 Watch the live feed
+            </button>
+          </div>
+        </div>
+      )}
       <div className="mb-3 flex items-center justify-between">
         <label className="text-xs font-semibold" style={{ color: "var(--text-soft)" }}>
           Paste comments — one per line
