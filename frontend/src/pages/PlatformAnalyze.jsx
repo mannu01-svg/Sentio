@@ -173,6 +173,63 @@ function PlatformAnalyzeLinkOnly({ platform, name, navigate }) {
   )
 }
 
+function PasteForm() {
+  const [text, setText] = useState("")
+  const [title, setTitle] = useState("")
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  const submit = async () => {
+    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean)
+    if (!lines.length || loading) return
+    setLoading(true); setError(null)
+    try {
+      const res = await analyzePost({ url: lines.join("\n"), mode: "paste", limit: lines.length, title: title.trim() || "Pasted comments" })
+      if (res.status === "error") setError(res.message)
+      else setText("")
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <Card className="p-5">
+      <div className="mb-3 flex items-center justify-between">
+        <label className="text-xs font-semibold" style={{ color: "var(--text-soft)" }}>
+          Paste comments — one per line
+        </label>
+        <span className="text-[10px]" style={{ color: "var(--text-faint)" }}>
+          {text.split("\n").filter((l) => l.trim()).length} comments
+        </span>
+      </div>
+      <input
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        placeholder="Title (optional) — e.g. Instagram post about the launch"
+        className="input mb-2 w-full"
+      />
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={"Love this so much!\nThe update is disappointing…\nWhere can I buy this?"}
+        rows={6}
+        className="input w-full resize-y"
+      />
+      <div className="mt-3 flex items-center gap-3">
+        <button className="btn btn-primary" onClick={submit} disabled={loading || !text.trim()}>
+          {loading ? "Streaming to Kafka…" : "🚀 Analyze pasted comments"}
+        </button>
+        {error && <span className="text-xs text-red-400">{error}</span>}
+        <span className="ml-auto text-[10px]" style={{ color: "var(--text-faint)" }}>
+          scores appear in ~30–60s · watch them on the Live Feed
+        </span>
+      </div>
+    </Card>
+  )
+}
+
 function KeywordForm({ platform, navigate }) {
   const [keyword, setKeyword] = useState("")
   const [loading, setLoading] = useState(false)
