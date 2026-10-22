@@ -11,6 +11,7 @@ import AccountDetail from "./pages/AccountDetail"
 import ThreadsCallback from "./pages/ThreadsCallback"
 import TopicStream from "./pages/TopicStream"
 import Trends from "./pages/Trends"
+import History from "./pages/History"
 import Models from "./pages/Models"
 import Pipeline from "./pages/Pipeline"
 import Sources from "./pages/Sources"
@@ -43,6 +44,7 @@ export default function App() {
       <Route path="/analyze/account/:platform/:handle" element={<Protected><AccountDetail /></Protected>} />
       <Route path="/topics/:source/:topic" element={<Protected><TopicStream /></Protected>} />
       <Route path="/trends" element={<Protected><Trends /></Protected>} />
+      <Route path="/history" element={<Protected><History /></Protected>} />
       <Route path="/models" element={<Protected><Models /></Protected>} />
       <Route path="/pipeline" element={<Protected><Pipeline /></Protected>} />
       <Route path="/sources" element={<Protected><Sources /></Protected>} />

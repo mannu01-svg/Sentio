@@ -38,6 +38,12 @@ export const fetchAlerts = () => get("/api/alerts")
 export const fetchSpam = (limit = 2000) => get(`/api/spam?limit=${limit}`)
 export const fetchPosts = () => get("/api/posts")
 export const fetchAccounts = () => get("/api/accounts")
+export const fetchHistory = ({ kind, platform, limit = 100 } = {}) => {
+  const params = new URLSearchParams({ limit })
+  if (kind) params.set("kind", kind)
+  if (platform) params.set("platform", platform)
+  return get(`/api/history?${params}`)
+}
 export const fetchPipeline = () => get("/api/pipeline")
 export const fetchTrending = () => get("/api/trending")
 export const fetchTopicStreams = () => get("/api/topics/streams")

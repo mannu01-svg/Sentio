@@ -14,6 +14,7 @@ export const Icons = {
   dashboard: (p) => <I {...p}><rect x="3" y="3" width="7" height="9" rx="1.5" /><rect x="14" y="3" width="7" height="5" rx="1.5" /><rect x="14" y="12" width="7" height="9" rx="1.5" /><rect x="3" y="16" width="7" height="5" rx="1.5" /></I>,
   live: (p) => <I {...p} d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" />,
   analyze: (p) => <I {...p} d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />,
+  history: (p) => <I {...p}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" /></I>,
   trends: (p) => <I {...p} d="M22 7l-8.5 8.5-5-5L2 17M16 7h6v6" />,
   models: (p) => <I {...p} d="M3 3v18h18M18 17V9M13 17V5M8 17v-3" />,
   pipeline: (p) => <I {...p}><path d="M6 3v12" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="6" r="3" /><path d="M18 9a9 9 0 0 1-9 9" /></I>,
@@ -57,6 +58,7 @@ const NAV = [
   { to: "/dashboard", label: "Dashboard", icon: Icons.dashboard },
   { to: "/live", label: "Live Feed", icon: Icons.live },
   { to: "/analyze", label: "Analyze", icon: Icons.analyze },
+  { to: "/history", label: "History", icon: Icons.history },
   { to: "/trends", label: "Trends", icon: Icons.trends },
   { to: "/models", label: "Models", icon: Icons.models },
   { to: "/pipeline", label: "Pipeline", icon: Icons.pipeline },
@@ -65,6 +67,7 @@ const NAV = [
 
 const TITLES = {
   "/dashboard": "Dashboard", "/live": "Live Feed", "/analyze": "Analyze",
+  "/history": "History",
   "/trends": "Trending", "/models": "Model Comparison", "/pipeline": "Pipeline Monitor",
   "/sources": "Data Sources", "/settings": "Settings",
 }

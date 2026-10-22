@@ -557,6 +557,78 @@ class AnalyzeStatus:
 ANALYZED = AnalyzeStatus()
 
 
+def _record_history(kind: str, *, post_id: str | None = None, title: str | None = None,
+                    platform: str | None = None, handle: str | None = None,
+                    keyword: str | None = None, posts: list[str] | None = None,
+                    comments_published: int = 0):
+    """Persist every analysis into the history table (survives API restarts)."""
+    try:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO history (kind, post_id, title, platform, handle, keyword, posts, comments_published)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (kind, post_id, title, platform, handle, keyword,
+                 ",".join(posts) if posts else None, comments_published),
+            )
+    except psycopg2.Error:
+        pass  # history is best-effort — never block the analysis
+
+
+@app.get("/api/history")
+def history(kind: str | None = Query(None, description="post | account | topic | keyword"),
+            platform: str | None = None,
+            limit: int = Query(100, ge=1, le=500)):
+    """Every analysis ever run, newest first — links, accounts, keywords, topics, pastes."""
+    clauses, params = ["1=1"], []
+    if kind:
+        clauses.append("kind = %s")
+        params.append(kind)
+    if platform:
+        clauses.append("platform = %s")
+        params.append(platform)
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT id, kind, post_id, title, platform, handle, keyword, posts,
+                   comments_published, created_at
+            FROM history
+            WHERE {' AND '.join(clauses)}
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (*params, limit),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    # live sentiment for each analysis's posts
+    out = []
+    with db() as conn, conn.cursor() as cur:
+        for row in rows:
+            post_ids = [p for p in (row["posts"] or "").split(",") if p]
+            if row["post_id"] and row["post_id"] not in post_ids:
+                post_ids.append(row["post_id"])
+            sentiment = {"positive_pct": 0, "negative_pct": 0, "neutral_pct": 0}
+            scored = 0
+            if post_ids:
+                placeholders = ",".join(["%s"] * len(post_ids))
+                cur.execute(
+                    f"SELECT {_sentiment_select()} FROM comments WHERE post_id IN ({placeholders})",
+                    post_ids,
+                )
+                agg = dict(cur.fetchone())
+                scored = agg.get("total") or 0
+                sentiment = _sentiment_payload(agg)
+            out.append({
+                **row,
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                "post_ids": post_ids,
+                "scored": scored,
+                "sentiment": sentiment,
+            })
+    return {"history": out, "count": len(out)}
+
+
 @app.post("/api/analyze")
 def analyze(req: AnalyzeRequest):
     """Fetch comments for a post URL (or pasted text) and push them into the pipeline."""
@@ -582,6 +654,15 @@ def analyze(req: AnalyzeRequest):
         "comments_fetched": len(result["comments"]),
         "comments_published": sent,
     })
+    _record_history(
+        "post" if req.mode != "paste" else "keyword",
+        post_id=result["post_id"],
+        title=result["post_title"] or req.title,
+        platform=result["source"],
+        keyword=req.title if req.mode == "paste" else None,
+        posts=[result["post_id"]],
+        comments_published=sent,
+    )
     return {
         "status": "ok",
         "post_id": result["post_id"],
@@ -690,6 +771,14 @@ def analyze_account(req: AnalyzeAccountRequest):
         "posts": [p["post_id"] for p in post_infos],
         "analyzed_at": datetime.now(timezone.utc).isoformat(),
     }
+    _record_history(
+        "account",
+        title=f"@{req.handle} on {req.platform}",
+        platform=req.platform.lower(),
+        handle=req.handle,
+        posts=[p["post_id"] for p in post_infos],
+        comments_published=published_total,
+    )
 
     return {
         "status": "ok",
@@ -1087,6 +1176,14 @@ def topics_stream(req: TopicStreamRequest):
         "posts": [p["post_id"] for p in post_infos],
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
+    _record_history(
+        "topic",
+        title=f"Topic: {topic} on {source}",
+        platform=source,
+        keyword=topic,
+        posts=[p["post_id"] for p in post_infos],
+        comments_published=published_total,
+    )
     return {
         "status": "ok",
         "topic": topic,

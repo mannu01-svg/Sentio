@@ -37,6 +37,22 @@ CREATE TABLE IF NOT EXISTS users (
     last_login     TIMESTAMP
 );
 
+-- every analysis the user runs (link / account / keyword / topic / paste)
+-- so all history is preserved and viewable later, even across API restarts
+CREATE TABLE IF NOT EXISTS history (
+    id            SERIAL PRIMARY KEY,
+    kind          TEXT NOT NULL,             -- post | account | topic | keyword
+    post_id       TEXT,                      -- topic post id / single post id
+    title         TEXT,                      -- human label of what was analyzed
+    platform      TEXT,                      -- youtube | reddit | x | instagram | facebook | threads | paste
+    handle        TEXT,                      -- account handle (account analyses)
+    keyword       TEXT,                      -- keyword / topic searched
+    posts         TEXT,                      -- comma-separated post ids belonging to this analysis
+    comments_published INTEGER DEFAULT 0,
+    created_at    TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_history_created ON history (created_at DESC);
+
 CREATE TABLE IF NOT EXISTS window_stats (
     window_start  TIMESTAMP NOT NULL,
     window_end    TIMESTAMP NOT NULL,
