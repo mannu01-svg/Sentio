@@ -22,6 +22,11 @@ data/*.csv
 # Model caches
 .cache/
 
+# Fine-tuned model: the 268MB safetensors blob stays local; its <=90MB
+# .partNN chunks + .sha256 checksum are committed (split_weights.py --split/--join)
+models/sentiment-finetuned/model.safetensors
+models/training/checkpoints/
+
 # Node / frontend
 frontend/node_modules/
 frontend/dist/
