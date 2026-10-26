@@ -25,9 +25,17 @@ LOGS="$ROOT/logs"
 mkdir -p "$LOGS"
 
 # preflight ---------------------------------------------------------------
-[ -d "$ROOT/.venv" ] || { echo "❌ .venv missing — run: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"; exit 1; }
+command -v docker >/dev/null || { echo "❌ docker not found — install docker first"; exit 1; }
+command -v node >/dev/null || { echo "❌ node.js not found — install node 18+ first"; exit 1; }
 [ -f "$ROOT/data/raw/all_sources.csv" ] || { echo "⚠️  data/raw/all_sources.csv missing — falling back to sample dataset"; SAMPLE=1; }
-command -v docker >/dev/null || { echo "❌ docker not found"; exit 1; }
+
+# fresh clone? bootstrap everything (venv, node_modules, JDK, model weights, demo user)
+if [ ! -d "$ROOT/.venv" ] || [ ! -d "$ROOT/frontend/node_modules" ]; then
+  bash "$ROOT/bootstrap.sh"
+else
+  # even on an existing setup, make sure weights + demo user exist (cheap checks)
+  bash "$ROOT/bootstrap.sh" >/dev/null 2>&1 || true
+fi
 
 # secrets (.env.local — canonical SCREAMING_SNAKE_CASE=VALUE lines) → export
 if [ -f "$ROOT/.env.local" ]; then
