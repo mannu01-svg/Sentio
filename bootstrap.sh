@@ -76,6 +76,8 @@ else
 fi
 
 # 6. demo login user (ada@sentio.app / secret123) -----------------------------
+#    Skipped gracefully when containers aren't up yet — start.sh re-invokes
+#    this script after containers are healthy, which completes the seed.
 PG_UP=$(docker inspect -f '{{.State.Health.Status}}' sma-postgres 2>/dev/null || echo none)
 if [ "$PG_UP" = "healthy" ]; then
   HAS_USER=$(docker exec sma-postgres psql -U sentiment -d sentiment -t -c \

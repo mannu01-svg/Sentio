@@ -199,12 +199,18 @@ def main() -> None:
     spark = build_spark()
     spark.sparkContext.setLogLevel("WARN")
 
+    # 0. Fresh clone/first run: checkpoint state decides the offset start.
+    #    No checkpoint = first run ever → start from EARLIEST so the seed pass
+    #    published by the producer is never skipped (latest would drop it).
+    first_run = not os.path.exists(os.path.join(CHECKPOINT, "pg-comments", "_metadata"))
+    print("first run — startingOffsets: earliest" if first_run else "resuming from checkpoint offsets")
+
     # 1. Raw stream from Kafka
     raw = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
         .option("subscribe", "comments-raw")
-        .option("startingOffsets", "latest")
+        .option("startingOffsets", "earliest" if first_run else "latest")
         .option("maxOffsetsPerTrigger", 2000)
         .option("failOnDataLoss", "false")
         .load()

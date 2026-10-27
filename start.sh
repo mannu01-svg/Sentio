@@ -68,6 +68,10 @@ echo
 [ "$KAFKA_OK" = "healthy" ] && [ "$PG_OK" = "healthy" ] || { echo "❌ containers not healthy — check: docker compose logs"; exit 1; }
 echo "   kafka + postgres healthy"
 
+# containers are now up — complete any bootstrap steps that were skipped
+# on the very first run (e.g. the demo login user seed)
+bash "$ROOT/bootstrap.sh" 2>&1 | grep -E "→|✓|⚠" || true
+
 # topics (idempotent) ------------------------------------------------------
 echo "▶ [3/7] ensuring kafka topics..."
 docker exec sma-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic comments-raw --partitions 3 --if-not-exists >/dev/null 2>&1 || \
