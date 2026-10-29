@@ -39,15 +39,29 @@ else
 fi
 
 # 3. JDK 17 (user-local, no sudo) --------------------------------------------
+#    Skipped entirely when a JDK is already installed (JAVA_HOME set) —
+#    the auto-download below is for bare Linux (the common case).
 JDK_DIR="$HOME/.tools/jdk-17"
-if [ ! -d "$JDK_DIR" ]; then
+if [ -n "$JAVA_HOME" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+  echo "  ✓ using existing JDK at $JAVA_HOME"
+elif [ ! -d "$JDK_DIR" ]; then
   echo "  → downloading JDK 17 (user-local, ~190MB, one-time)…"
   mkdir -p "$HOME/.tools"
-  JDK_URL="https://download.java.net/java/GA/jdk17.0.2/dfd4a8d0985749f896bed50d7138ee7f/8/GPL/openjdk-17.0.2_linux-x64_bin.tar.gz"
+  OS="$(uname -s)"; ARCH="$(uname -m)"
+  case "$OS" in
+    Darwin)
+      if [ "$ARCH" = "arm64" ]; then
+        JDK_URL="https://download.java.net/java/GA/jdk17.0.2/dfd4a8d0985749f896bed50d7138ee7f/8/GPL/openjdk-17.0.2_macos-aarch64_bin.tar.gz"
+      else
+        JDK_URL="https://download.java.net/java/GA/jdk17.0.2/dfd4a8d0985749f896bed50d7138ee7f/8/GPL/openjdk-17.0.2_macos-x64_bin.tar.gz"
+      fi
+      ;;
+    *) JDK_URL="https://download.java.net/java/GA/jdk17.0.2/dfd4a8d0985749f896bed50d7138ee7f/8/GPL/openjdk-17.0.2_linux-x64_bin.tar.gz" ;;
+  esac
   curl -fsSL -o /tmp/jdk17.tar.gz "$JDK_URL" || { echo "⚠ JDK download failed — Spark needs Java 17: export JAVA_HOME to your JDK"; }
   if [ -f /tmp/jdk17.tar.gz ]; then
     tar xzf /tmp/jdk17.tar.gz -C "$HOME/.tools"
-    mv "$HOME/.tools/jdk-17.0.2" "$JDK_DIR" 2>/dev/null || true
+    mv "$HOME/.tools"/jdk-17* "$JDK_DIR" 2>/dev/null || true
     rm -f /tmp/jdk17.tar.gz
     echo "  ✓ JDK 17 ready at $JDK_DIR"
   fi

@@ -55,6 +55,9 @@ fi
 "$ROOT/stop.sh" >/dev/null 2>&1 || true
 
 echo "▶ [1/6] docker compose up..."
+# container names are fixed (sma-kafka/sma-postgres): a previous run's stale
+# containers (even from a different clone) would conflict — clear them
+docker rm -f sma-kafka sma-postgres >/dev/null 2>&1 || true
 docker compose up -d
 
 echo -n "▶ [2/6] waiting for containers"

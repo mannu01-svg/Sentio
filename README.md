@@ -1,118 +1,441 @@
-# Social Media Sentiment Analysis — Real-Time Pipeline
+# Sentio — Real-Time Social Media Sentiment Analysis
 
-Kafka → Spark Structured Streaming → VADER + DistilBERT → PostgreSQL → FastAPI → React dashboard.
+**Kafka → Spark Structured Streaming → VADER + DistilBERT + RoBERTa → PostgreSQL → FastAPI → React**
 
-![stack](https://img.shields.io/badge/kafka-3.9-black) ![spark](https://img.shields.io/badge/spark-3.5.4-orange) ![python](https://img.shields.io/badge/python-3.12-blue) ![react](https://img.shields.io/badge/react-19-cyan)
+Sentio ingests social-media comments (Reddit, YouTube, X/Twitter, Instagram, Facebook, Threads),
+scores their sentiment with three models side-by-side, aggregates live trends, and serves it all
+through an interactive dashboard — entirely on your localhost.
 
-## What it does
-1. **Producer** replays a comments CSV (Reddit/YouTube/Instagram datasets) into Kafka as a simulated live stream.
-2. **Link analysis** — paste a YouTube video or Reddit thread URL in the dashboard: its comments are fetched (yt-dlp / PullPush API) and pushed through the same pipeline (`POST /api/analyze`).
-3. **Spark Structured Streaming** consumes, cleans text, scores sentiment with **VADER** (lexicon) and **DistilBERT** (transformer), aggregates 1-minute windows.
-4. **Sinks** write scored comments + window stats to PostgreSQL (idempotent upserts) and a scored JSON feed back to Kafka.
-5. **FastAPI** serves summary / timeline / comments / words / model-comparison / trends / alerts / spam / posts endpoints + CSV export.
-6. **Dashboard** (React + Recharts) polls: KPIs, sentiment timeline, distribution, trending words + velocity, live feed, VADER-vs-BERT comparison, analyzed-posts panel, spike alerts, spam filter.
-7. **Evaluation** scores both models against dataset labels (accuracy, F1, confusion matrices).
+![stack](https://img.shields.io/badge/kafka-3.9-black) ![spark](https://img.shields.io/badge/spark-3.5.4-orange) ![python](https://img.shields.io/badge/python-3.12-blue) ![react](https://img.shields.io/badge/react-19-cyan) ![fastapi](https://img.shields.io/badge/fastapi-0.115-green)
+
+---
+
+## Contents
+
+1. [What is Sentio?](#what-is-sentio)
+2. [Requirements](#requirements)
+3. [Quickstart — Mac & Windows & Linux](#quickstart)
+4. [First tour — what to click](#first-tour)
+5. [Every tab explained](#every-tab-explained)
+6. [The three sentiment models](#the-three-sentiment-models)
+7. [Where the data comes from (Kaggle & sources)](#where-the-data-comes-from)
+8. [Architecture](#architecture)
+9. [API reference](#api-reference)
+10. [Configuration reference](#configuration-reference)
+11. [Troubleshooting](#troubleshooting)
+12. [Tests & docs](#tests--docs)
+13. [Project structure](#project-structure)
+
+---
+
+## What is Sentio?
+
+Six services work together:
+
+| Service | What it does |
+|---|---|
+| **Producer** | Replays real comment datasets into Kafka as a simulated live stream (seed + on-demand bursts). |
+| **Kafka** | Message bus holding raw (`comments-raw`) and scored (`comments-scored`) comment streams. |
+| **Spark Streaming** | Consumes raw comments, cleans text, scores sentiment with **VADER + DistilBERT + RoBERTa**, builds 1-minute aggregates. |
+| **PostgreSQL** | Stores every scored comment + window stats + users + analysis history. |
+| **FastAPI** | 30+ REST endpoints: summaries, timelines, trends, keyword search, URL analysis, CSV export. |
+| **React dashboard** | The app you interact with: 8 tabs, live charts, KPIs, deep links. |
+
+You can also **paste any YouTube video or Reddit thread URL** into the dashboard and Sentio
+will fetch its real comments (via `yt-dlp` / PullPush) and push them through the same pipeline.
+
+---
+
+## Requirements
+
+| Requirement | Version | Where to get it |
+|---|---|---|
+| **Docker Desktop** | any recent | [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) |
+| **Node.js** | 18 or newer | [nodejs.org](https://nodejs.org/) (LTS is fine) |
+| **Python** | 3.10 – 3.12 | [python.org](https://www.python.org/downloads/) (macOS: `brew install python@3.12`; Windows: check "Add to PATH" in installer) |
+| **Java 17** | 17.x | **auto-downloaded by `./start.sh`** — no action needed unless you already have a JDK |
+| ~6 GB free RAM | — | Kafka + Postgres containers + Spark + models |
+| ~4 GB disk | — | Python env, node_modules, model weights, datasets |
+
+> **Windows note:** run everything inside **Git Bash**, **WSL**, or **WSL2** (recommended).
+> `./start.sh` is a bash script. In WSL2 it runs natively; in Git Bash it also works as long as
+> Docker Desktop is running.
+
+Everything else (Python packages, npm packages, JDK, sentiment models, datasets) is installed
+**automatically** on first run.
+
+---
+
+## Quickstart
+
+### 1. Clone
+
+```bash
+git clone https://github.com/mannu01-svg/Sentio.git
+cd Sentio
+```
+
+### 2. Start
+
+```bash
+./start.sh
+```
+
+That's it. The first run does everything automatically (~10–15 min on decent internet, mostly one-time):
+
+- creates a Python virtualenv + installs all packages
+- `npm install` for the frontend
+- downloads JDK 17 to `~/.tools/jdk-17` (no admin rights needed; skipped if you have Java)
+- rejoins the fine-tuned model weights from committed chunks
+- downloads the two HuggingFace sentiment models (one-time, ~5 min)
+- starts Kafka + PostgreSQL containers, creates topics, seeds the DB
+- seeds a **demo login user** (below)
+- starts Spark, producer, API, and dashboard, then verifies every service
+
+**Variants:**
+
+```bash
+./start.sh --fast     # skip transformer models — runs in ~1 min, VADER only (quick demo)
+./start.sh --fresh    # wipe DB + checkpoints for a clean demo state
+./stop.sh             # stop everything (data is kept)
+```
+
+### 3. Open the app
+
+When `./start.sh` finishes it prints a status box. Then open:
+
+| URL | What |
+|---|---|
+| **http://localhost:5173** | the dashboard (login first) |
+| http://localhost:8000/docs | interactive API docs (Swagger) |
+| http://localhost:4040 | Spark streaming UI (while Spark runs) |
+
+**Demo login:** `ada@sentio.app` / `secret123` — or create your own account on the login page
+(signup is instant, stored in Postgres).
+
+### What you should see within a minute
+
+- KPI cards at the top of the Dashboard (total comments, % positive, etc.)
+- a sentiment timeline chart filling in
+- comments scrolling into the live feed
+- trending words updating every few seconds
+
+If anything shows red in the status box, jump to [Troubleshooting](#troubleshooting).
+
+---
+
+## First tour
+
+Log in and you land on the **Dashboard**. There is a sidebar on the left with 8 tabs:
+
+```
+Dashboard  ·  Live Feed  ·  Analyze  ·  History  ·  Trends  ·  Models  ·  Pipeline  ·  Sources
+```
+
+A 60-second script to see everything:
+
+1. **Dashboard** — KPIs, sentiment timeline, distribution donut, trending words, live comment feed, spike alerts. Hit the red **Go Live** button: the producer floods Kafka at high rate and you watch the charts move in real time.
+2. **Live Feed** — a full-page, auto-refreshing wall of scored comments with model labels and confidence chips. Filter by source (reddit/youtube/x/…).
+3. **Analyze** — paste a **YouTube video URL** or **Reddit thread URL** → Sentio fetches the real comments and scores them. Also: analyze a whole account/handle, or search a keyword across sources.
+4. **History** — every analysis you've ever run (URL, account, keyword, topic stream), with live sentiment re-computed per entry. Survives restarts. Click an entry to jump back to it.
+5. **Trends** — trending topics over your full history with % share, keyword search with platform breakdown, topic streams (per-topic deep dives), timeline + sentiment-over-time for any lookback window.
+6. **Models** — side-by-side comparison of the three sentiment models (VADER vs DistilBERT vs RoBERTa): agreement, accuracy against dataset labels, per-model confidence, plus the **fine-tuned DistilBERT card** trained on our own 70k-row Kaggle corpus.
+7. **Pipeline** — plain-English live status of every stage (producer → Kafka → Spark → DB → API), with throughputs and counts. Great for demos and debugging.
+8. **Sources** — every dataset behind the app, with real row counts per platform.
+
+---
+
+## Every tab explained
+
+### 1. Dashboard (`/dashboard`)
+The command center. Shows: **KPI cards** (total comments, positive %, negative %, neutral %),
+**sentiment timeline** (stacked area, 1-minute buckets), **distribution donut**,
+**trending words** with velocity arrows, **live feed** of the most recently scored comments,
+**VADER-vs-BERT disagreement** panel, **spike alerts** (comment volume bursts), and the
+**Go Live** button (control the simulated firehose: minutes × rate, e.g. 3 min at 40 comments/s).
+
+### 2. Live Feed (`/live`)
+Infinite scrollable wall of every scored comment, newest first, with per-model sentiment chips
+(VADER / DistilBERT / RoBERTa) and confidence scores. Filter by platform. This is the raw
+output of the Spark stream — what you see here is exactly what's in Postgres.
+
+### 3. Analyze (`/analyze`)
+Four ways to analyze something not in the stream:
+- **Paste URL** — a YouTube video or Reddit thread link. Sentio fetches its comments
+  (yt-dlp for YouTube, PullPush for Reddit) and pushes them through the live pipeline.
+  You get a full sentiment report and a persistent post record.
+- **Platform analyze** — per-platform forms (YouTube / Reddit / X / Instagram / Facebook).
+- **Account analyze** — give a handle (`@nasa`, etc.); the pool is matched for that author's
+  comments and scored as one body of work.
+- **Keyword search** — a term (" IPL", " election", " AI") across all sources with
+  per-platform sentiment splits.
+Every result is recorded in **History** automatically.
+
+### 4. History (`/history`)
+Your analysis log. Each entry: kind (URL / account / keyword / topic), title, platform,
+timestamp, and **live sentiment bars re-computed from the DB right now** — so an old entry's
+numbers stay current as new data flows in. Filter chips per kind. Deep-links back into the
+original view. Survives API restarts (it's a table, not state).
+
+### 5. Trends (`/trends`)
+- **Trending topics** — the biggest topics across the **full DB history** with % share of all comments.
+- **Keyword search** — any term with sentiment split and per-platform breakdown.
+- **Topic streams** — click a topic to open a dedicated stream page for it (`/topics/:source/:topic`).
+- **Timeline** — comment volume + sentiment over any lookback window (falls back gracefully
+  when you request more history than exists).
+
+### 6. Models (`/models`)
+Everything about the three sentiment engines plus our own fine-tune:
+- **VADER** card — lexicon-based, transparent, ~28k comments/s, tuned for social media.
+- **DistilBERT** card — SST-2 transformer, context-aware, binary pos/neg.
+- **RoBERTa** card — cardiffnlp, trained on **124M tweets**, understands slang/emojis/sarcasm;
+  this is the **authoritative headline score** everywhere in the app.
+- **Fine-tuned DistilBERT** card — trained on our own cleaned **70,671-row Kaggle corpus**
+  (110 noisy emotion labels normalized to pos/neg/neu), with validation accuracy and epoch config.
+- **Model comparison** — agreement matrix, per-model accuracy against dataset labels,
+  and disagreement analysis (where VADER and BERT disagree, RoBERTa arbitrates).
+
+### 7. Pipeline (`/pipeline`)
+The "how it works" tab, in plain English, with live numbers: producer rate, Kafka offsets,
+Spark micro-batch stats (rows in/out, trigger), DB row counts, API health. Each stage has an
+explanation of *what* it does and *why* it exists. If something is stuck, this tab shows where.
+
+### 8. Sources (`/sources`)
+Honest accounting of the data: every CSV dataset, its real row count, and what portion of the
+DB each platform covers (e.g. reddit 38k rows, youtube 18k, x 20k, facebook 49k, instagram 1.4k,
+threads 1.5k). Producer auto-detects column names (`comment`/`text`/`CONTENT`, `label`/`CLASS`, …).
+
+---
+
+## The three sentiment models
+
+Every comment is scored by **all three** models simultaneously:
+
+| | VADER | DistilBERT | RoBERTa (cardiffnlp) |
+|---|---|---|---|
+| Type | rule/lexicon-based | transformer (SST-2) | transformer (124M tweets) |
+| Output | compound −1..1 + pos/neg/neu proportions | positive/negative + confidence | positive/neutral/negative + confidence |
+| Speed | ~28,000/s | ~500/s batched | ~290/s batched per worker |
+| Strength | transparent, instant, great on short social text | context-aware classification | slang, emojis, sarcasm patterns |
+| Role in app | baseline + fast mode | comparison + fine-tune base | **headline score** |
+
+**Headline logic:** the sentiment shown everywhere (KPIs, timeline, trending) is the
+**RoBERTa label**, falling back to VADER in `--fast` mode. VADER and DistilBERT run
+alongside so the Models tab can show agreement/disagreement analytics.
+
+**Our own fine-tune:** `models/training/` contains a full training pipeline —
+`prepare_data.py` (cleans + dedupes the Kaggle corpus, normalizes 110 noisy emotion labels
+to pos/neg/neu, 90/10 split), `finetune.py` (HF Trainer, 3 epochs, warmup), and the result
+ships in `models/sentiment-finetuned/` (weights stored as GitHub-friendly chunks, auto-rejoined
+on first run). Retrain it yourself:
+
+```bash
+.venv/bin/python models/training/prepare_data.py     # builds the 70k-row corpus
+.venv/bin/python models/training/finetune.py         # fine-tunes DistilBERT (~2-3 h CPU)
+```
+
+---
+
+## Where the data comes from
+
+### Bundled (works out of the box)
+- `data/sample_comments.csv` — 50 labeled comments, zero setup.
+- `data/raw/all_sources.csv` — a **144,800-row** merged dataset across 6 platforms
+  (this is what `./start.sh` seeds from by default).
+
+### Kaggle datasets (already merged into `data/raw/`)
+| Platform | Rows | Source dataset |
+|---|---|---|
+| Reddit | 38,206 | [Twitter and Reddit Sentimental Analysis](https://www.kaggle.com/datasets/cosmos98/twitter-and-reddit-sentimental-analysis-dataset) (cosmos98) |
+| X / Twitter | 20,001 | Kaggle Twitter sentiment sets |
+| Facebook | 49,454 | Kaggle Facebook comments set |
+| YouTube | 18,365 | Kaggle YouTube comments / UCI YouTube Spam Collection |
+| Instagram | 1,450 | Kaggle Instagram comment set |
+| Threads | 1,526 | preview dataset (the pipeline treats it as a first-class source) |
+
+**Adding your own dataset:** drop any CSV at `data/raw/<name>.csv` with a text column and
+(optionally) a label column — the producer auto-detects common column names
+(`comment`/`text`/`CONTENT`, `label`/`sentiment`/`CLASS`, …). See `data/README.md`.
+
+**Real-time ingestion:** X and Reddit block anonymous real-time access (HTTP 403/521), so
+real-time streams are **pool-matched**: live bursts replay rows whose author/topic matches the
+requested handle or keyword. YouTube works fully in real time via `yt-dlp`.
+
+---
 
 ## Architecture
+
 ```
-CSV → producer.py → Kafka[comments-raw] → Spark streaming
-      ├── clean → VADER → DistilBERT → 1-min windows
-      ├── → Kafka[comments-scored]
-      ├── → PostgreSQL.comments (upsert id)
-      └── → PostgreSQL.window_stats (upsert window)
-                    ↓
-             FastAPI :8000  ←— poll 3s —  React :5173
-```
-
-## Quickstart — one command
-```bash
-./start.sh              # runs everything: docker, spark, producer, api, dashboard
-./start.sh --fast       # skip DistilBERT for a quicker demo
-./start.sh --fresh      # clean state (truncate DB, reset topics)
-./stop.sh               # stop everything (data kept)
-# logs: tail -f logs/spark.log | producer.log | api.log | frontend.log
-```
-
-Manual steps (if you prefer separate terminals):
-```bash
-# 1. infra: Kafka + Postgres (wait for "healthy")
-docker compose up -d
-docker compose ps
-
-# 2. python env
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-
-# 3. Spark streaming job (SKIP_BERT=1 for a light smoke run)
-./run_spark.sh                      # needs Java 17: export JAVA_HOME to your JDK
-# smoke mode: SKIP_BERT=1 ./run_spark.sh
-
-# 4. data: put a Kaggle CSV at data/raw/reddit.csv (see data/README.md)
-#    or use the bundled sample. The producer seeds one pass, then idles:
-python producer/producer.py --file data/sample_comments.csv --seed 50
-#    trigger live bursts (the dashboard's "Go live" button does this):
-curl -X POST localhost:8000/api/stream/live -H 'Content-Type: application/json' -d '{"minutes":3,"rate":40}'
-
-# 5. API
-.venv/bin/uvicorn api.main:app --port 8000     # docs at /docs
-
-# 6. dashboard
-cd frontend && npm install && npm run dev       # http://localhost:5173
-
-# 7. evaluate models vs labels (DB rows, or CSV offline)
-.venv/bin/python evaluation/evaluate.py
-.venv/bin/python evaluation/evaluate.py --csv data/raw/reddit.csv --sample 2000
+ datasets (Kaggle CSVs, 274k rows)
+        │
+        ▼
+ producer.py ──seed + live bursts──►  Kafka  comments-raw (3 partitions)
+                                          │
+                                          ▼
+                            Spark Structured Streaming (local[8])
+                            ├── JSON parse + clean text (URLs, emoji, HTML, case)
+                            ├── VADER scoring            (pandas UDF)
+                            ├── DistilBERT + RoBERTa     (mapInPandas, batched, warm models)
+                            └── 1-minute window aggregates
+                                          │
+                ┌─────────────────────────┴──────────────────────┐
+                ▼                                                ▼
+     Kafka comments-scored                        PostgreSQL (idempotent upserts)
+     (live feed topic)                            comments · window_stats · users · history
+                │                                                │
+                └───────────────────────┬────────────────────────┘
+                                        ▼
+                            FastAPI :8000 (30+ endpoints)
+                                        ▲ poll every ~3 s
+                                        │
+                            React dashboard :5173
 ```
 
-## Java note (Spark needs JDK 17)
-```bash
-# example user-local install (no sudo):
-curl -fsSL -o /tmp/jdk.tar.gz https://download.java.net/java/GA/jdk17.0.2/dfd4a8d0985749f896bed50d7138ee7f/8/GPL/openjdk-17.0.2_linux-x64_bin.tar.gz
-mkdir -p ~/.tools && tar xzf /tmp/jdk.tar.gz -C ~/.tools && mv ~/.tools/jdk-17.0.2 ~/.tools/jdk-17
-export JAVA_HOME=~/.tools/jdk-17 && export PATH=$JAVA_HOME/bin:$PATH
-```
-`run_spark.sh` already prefers `~/.tools/jdk-17` if present.
+**Delivery semantics:** every sink upserts by primary key (`comments.id`, `window_stats.window_start`),
+so producer replays and Spark restarts are always safe — no duplicates, ever.
 
-## Datasets
-| File | Where | Notes |
+---
+
+## API reference
+
+Full interactive docs at **http://localhost:8000/docs**. Highlights:
+
+| Endpoint | What |
+|---|---|
+| `POST /api/signup` · `POST /api/login` | auth (PBKDF2-hashed passwords) |
+| `GET /api/summary` | KPIs: totals, % split, avg score |
+| `GET /api/timeline?minutes=60` | 1-minute bucketed sentiment history |
+| `GET /api/comments?source=reddit&limit=50` | scored comments, filterable |
+| `GET /api/words` | trending words + velocity |
+| `GET /api/compare` | VADER vs DistilBERT vs RoBERTa agreement stats |
+| `GET /api/history` | your analysis log with live sentiment per entry |
+| `POST /api/analyze` | fetch + score a YouTube/Reddit URL |
+| `POST /api/analyze-account` | analyze an account/handle |
+| `POST /api/keyword-search` | search a keyword across all sources |
+| `GET /api/trends` · `GET /api/trending` | topics, % share, velocity |
+| `POST /api/topics/stream` | start a live topic stream |
+| `POST /api/stream/live` · `POST /api/stream/stop` | control the simulated firehose (rate 5–120/s) |
+| `GET /api/alerts` | volume-spike alerts |
+| `GET /api/export` | CSV export of scored comments |
+| `GET /api/spam` · `/api/comments/{id}/spam` | spam analysis |
+| `GET /health` | liveness probe |
+
+---
+
+## Configuration reference
+
+Everything works with defaults. Optional overrides (create `.env.local` — gitignored — or export env vars):
+
+| Variable | Default | Meaning |
 |---|---|---|
-| `data/sample_comments.csv` | bundled | 50 labeled YouTube-style comments — works out of the box |
-| `data/raw/reddit.csv` | Kaggle: *Twitter and Reddit Sentimental Analysis Dataset* (cosmos98) | ~49k Reddit comments with sentiment labels |
-| `data/raw/youtube.csv` | Kaggle YouTube comments dataset or UCI YouTube Spam Collection | optional second source |
+| `SEED_ROWS` | `6000` | comments seeded on startup |
+| `NLP_BATCH_SIZE` | `64` | transformer batch size inside Spark workers |
+| `NLP_TORCH_THREADS` | `6` | torch threads per Spark worker (8 workers × 6 = 48 cores) |
+| `SPARK_MASTER` | `local[8]` | Spark parallelism |
+| `TRIGGER_SECONDS` | `10` | streaming micro-batch interval |
+| `WINDOW_SECONDS` | `60` | aggregation window size |
+| `KAFKA_BOOTSTRAP` | `localhost:9092` | Kafka address |
+| `PG_DSN` | `localhost:5432/sentiment` | Postgres connection (user/pass `sentiment`) |
+| `CHECKPOINT_DIR` | `checkpoints/` | Spark checkpoint location |
+| `SKIP_BERT` | unset | `1` = transformers skipped (fast mode) |
 
-Producer auto-detects common column names (`comment/text/CONTENT`, `label/sentiment/CLASS`, …).
+`.env.local` uses plain `KEY=VALUE` lines and is loaded by `start.sh` automatically.
 
-## Tests
+---
+
+## Troubleshooting
+
+**`./start.sh` prints red for Spark** → `tail -100 logs/spark.log`. After an unclean shutdown,
+Spark occasionally wedges (`py4j ... Received empty command`). Fix:
+
 ```bash
-.venv/bin/pytest tests/ -v        # 18 tests: NLP cleaning/labeling + API endpoints
+./stop.sh
+pkill -9 -f pyspark.daemon
+rm -rf checkpoints
+./start.sh
 ```
 
-## Documentation (`docs/`)
+**Containers won't start / port 5432 or 9092 busy** → a stale container or process holds the port:
+
+```bash
+docker rm -f sma-kafka sma-postgres
+./start.sh
+```
+
+**Dashboard empty after start** → the seed pass takes ~40 s to score; watch `logs/spark.log`
+for `[Stage…]` progress, or press **Go Live** to force traffic.
+
+**`docker not found` / `node not found`** → install Docker Desktop and Node.js first
+(see [Requirements](#requirements)); these are system apps and can't be pip-installed.
+
+**Model download fails / HF warnings** → rerun `.venv/bin/python scripts/warmup_models.py`,
+or just restart — Spark retries downloads on start.
+
+**Fresh demo state** → `./start.sh --fresh` truncates the DB and resets checkpoints.
+
+**Nuclear option** (wipes data, rebuilds infra):
+
+```bash
+./stop.sh
+docker rm -f sma-kafka sma-postgres
+docker volume rm sentiment_pgdata 2>/dev/null
+rm -rf checkpoints
+./start.sh
+```
+
+---
+
+## Tests & docs
+
+```bash
+.venv/bin/pytest tests/ -v        # 42 tests: NLP, API, features, threads
+cd frontend && npm run build      # production build check
+cd frontend && npm run lint       # oxlint
+```
+
+`docs/` contains the full academic/documentation set:
+
 | Doc | Content |
 |---|---|
 | `01_SRS.md` | IEEE-style requirements (FR-1..29, NFR-1..8, use cases) |
 | `02_SDD.md` | architecture, DFDs, sequence diagram, DB schema, API contract, error matrix |
 | `03_Final_Report.md` | full report: abstract → results → references |
-| `04_Work_Division.md` | workstreams, phase plan, RACI matrix (team of 4) |
+| `04_Work_Division.md` | workstreams, phase plan, RACI matrix |
 | `05_Docker_Guide.md` | every container/env var explained + troubleshooting |
 | `06_Jenkins_Guide.md` | CI pipeline stages + local Jenkins setup |
 | `07_Jira_Guide.md` | epics/stories, 3-sprint plan, story points |
 | `08_GitHub_Guide.md` | branching, PRs, issues, commit convention |
 | `09_Demo_and_Viva.md` | 10-min demo script + 15 viva Q&As |
 
+---
+
 ## Project structure
+
 ```
-producer/producer.py      CSV → Kafka replay (seed + live bursts on demand)
-spark/nlp.py              VADER + DistilBERT scoring (unit tested)
-spark/streaming_job.py    Kafka → clean → score → windows → sinks
-api/main.py               FastAPI: /api/summary timeline comments words compare
-frontend/                 React + Vite + Tailwind + Recharts dashboard
-evaluation/evaluate.py    accuracy / F1 / confusion vs labels
-db/init.sql               Postgres schema
-docker-compose.yml        Kafka (KRaft) + PostgreSQL
-Jenkinsfile               CI: lint → tests → frontend build → compose check
+producer/producer.py        CSV → Kafka replay (seed + live bursts, control-file driven)
+spark/nlp.py                VADER + DistilBERT + RoBERTa scoring (unit tested, warm models)
+spark/streaming_job.py      Kafka → clean → score → windows → sinks (single-pass foreachBatch)
+fetcher/fetchers.py         yt-dlp (YouTube) + PullPush (Reddit) real-comment fetchers
+api/main.py                 FastAPI: 30+ endpoints (auth, summary, analyze, trends, history…)
+frontend/                   React 19 + Vite + Tailwind + Recharts (8 tabs)
+  src/pages/                Dashboard · Live · Analyze · History · Trends · Models · Pipeline · Sources
+  src/components/UI.jsx     app shell, sidebar nav, sentiment chips
+models/sentiment-finetuned/ our fine-tuned DistilBERT (chunked weights + meta)
+models/training/            prepare_data.py · finetune.py · split_weights.py
+evaluation/evaluate.py      accuracy / F1 / confusion matrices vs dataset labels
+data/raw/                   7 Kaggle datasets, 274k rows total
+db/init.sql                 Postgres schema (comments · users · history · window_stats)
+docker-compose.yml          Kafka (KRaft) + PostgreSQL, healthchecks
+start.sh / stop.sh          one-command lifecycle (auto-bootstraps everything)
+bootstrap.sh                first-run setup (venv, npm, JDK, weights, demo user)
+Jenkinsfile                 CI: lint → tests → frontend build → compose check
+tests/                      42 pytest cases
 ```
 
-## Verified numbers (demo run)
-- 4,300+ comments streamed & scored end-to-end without duplicates
-- VADER 56.0% / DistilBERT 64.1% label accuracy (4,509 labeled Reddit comments)
-- Model agreement 44.1% — disagreement analysis on the dashboard
+---
+
+## Tech stack
+
+Python 3.12 · PySpark 3.5.4 · Kafka 3.9 (KRaft) · PostgreSQL 16 · FastAPI ·
+Transformers (DistilBERT, RoBERTa) · VADER · React 19 · Vite · Tailwind 4 · Recharts ·
+Docker · pytest · Jenkins CI

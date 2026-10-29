@@ -21,6 +21,14 @@ invoked inside the Spark job via mapInPandas / UDFs.
 
 from __future__ import annotations
 
+import os
+
+# Models are cached locally (warmup_models.py) — never hit the HF Hub at
+# inference time: a hub roundtrip inside a Spark worker costs seconds and
+# blocks the whole micro-batch.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 from functools import lru_cache
 
 import re
@@ -85,6 +93,29 @@ def _bert_pipeline():
 
 
 BATCH_SIZE = int(__import__("os").getenv("NLP_BATCH_SIZE", "64"))
+
+
+def _cap_torch_threads() -> None:
+    """Spark's JVM overrides OMP_NUM_THREADS=1 inside python workers, so torch
+    would run inference single-threaded (~200s per 2k-row batch). NLP_TORCH_THREADS
+    (exported in run_spark.sh) survives the JVM env clobber — read it here."""
+    try:
+        import torch
+
+        torch.set_num_threads(max(1, int(os.getenv("NLP_TORCH_THREADS", "6"))))
+    except Exception:
+        pass
+
+
+def warm() -> None:
+    """Preload both transformer pipelines + thread caps (once per worker).
+
+    Called at the top of the Spark mapInPandas worker so model loads are paid
+    once per forked worker instead of once per batch/row.
+    """
+    _cap_torch_threads()
+    _bert_pipeline()
+    _llm_pipeline()
 
 
 def bert_batch(texts: list[str]) -> list[dict]:

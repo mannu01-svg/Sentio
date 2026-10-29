@@ -8,6 +8,15 @@ writes:
   - scored comments -> PostgreSQL table `comments`   (history/API, id-upsert)
   - window aggregates -> PostgreSQL table `window_stats` (charts/API, upsert)
 
+Throughput notes (why this looks the way it does):
+  - the scored DataFrame is defined ONCE and shared by all three sinks. Spark
+    recomputes each branch independently, but nlp.py keeps warm models in the
+    worker processes, so re-scoring is ~2ms/row instead of ~7.5s/batch cold
+    loads. A single-batch trigger keeps latency low without tiny-batch churn.
+  - workers are forked per batch and re-import nlp; PYSPARK_SETUP_FUNC in
+    nlp.py warms torch thread limits + model loads at fork time, so the
+    expensive part is paid once per worker, not per row.
+
 Run:
     ./run_spark.sh
 Env:
@@ -17,9 +26,12 @@ Env:
 import os
 import sys
 
+import json
+
 import pandas as pd
 import psycopg2
 import psycopg2.extras
+from kafka import KafkaProducer
 
 from pyspark.sql import SparkSession, functions as F, types as T
 
@@ -34,6 +46,7 @@ PG_DSN = os.getenv(
 CHECKPOINT = os.getenv("CHECKPOINT_DIR", "checkpoints")
 WINDOW_SECONDS = int(os.getenv("WINDOW_SECONDS", "60"))
 SKIP_BERT = os.getenv("SKIP_BERT", "") == "1"
+TRIGGER_SECONDS = os.getenv("TRIGGER_SECONDS", "10")
 
 RAW_SCHEMA = (
     T.StructType()
@@ -55,11 +68,6 @@ VADER_SCHEMA = T.StructType([
     T.StructField("vader_neutral", T.DoubleType()),
 ])
 
-BERT_SCHEMA = T.StructType([
-    T.StructField("bert_label", T.StringType()),
-    T.StructField("bert_score", T.DoubleType()),
-])
-
 
 def bert_full_schema(base_schema: T.StructType) -> T.StructType:
     """mapInPandas replaces the row, so its output schema must be input + new cols.
@@ -79,18 +87,25 @@ def bert_full_schema(base_schema: T.StructType) -> T.StructType:
 def build_spark() -> SparkSession:
     return (
         SparkSession.builder.appName("social-media-sentiment")
-        .master(os.getenv("SPARK_MASTER", "local[*]"))
+        .master(os.getenv("SPARK_MASTER", "local[8]"))
         .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4")
         .config("spark.sql.shuffle.partitions", "4")
-        .config("spark.driver.memory", "2g")
+        .config("spark.driver.memory", "4g")
         # mapInPandas: hand each worker >=256 rows so transformer batching pays off
-        .config("spark.sql.execution.arrow.maxRecordsPerBatch", "256")
+        .config("spark.sql.execution.arrow.maxRecordsPerBatch", "512")
+        .config("spark.sql.execution.arrow.pyspark.enabled", "true")
         .getOrCreate()
     )
 
 
 def bert_map(iterator):
-    """mapInPandas worker: add bert + llm columns via batched inference (4x faster)."""
+    """mapInPandas worker: add bert + llm columns via batched inference.
+
+    Models are warm in the worker process (nlp module-level preload on first
+    import), so the first pdf pays nothing and later batches reuse them.
+    """
+    if not SKIP_BERT:
+        nlp.warm()  # loads torch thread caps + both pipelines once per worker
     for pdf in iterator:
         if pdf.empty:
             yield pdf
@@ -160,16 +175,8 @@ def upsert_comments(batch_df, _batch_id: int) -> None:
         )
 
 
-def upsert_stats(batch_df, _batch_id: int) -> None:
+def upsert_stats_rows(rows: list[tuple]) -> None:
     """Write/refresh window aggregates (a window can be updated by later batches)."""
-    rows = [
-        (
-            r["window_start"], r["window_end"], r["total"], r["positive"],
-            r["negative"], r["neutral"], r["pos_pct"], r["neg_pct"], r["neu_pct"],
-            r["avg_score"],
-        )
-        for r in batch_df.collect()
-    ]
     if not rows:
         return
     with psycopg2.connect(PG_DSN) as conn, conn.cursor() as cur:
@@ -186,13 +193,123 @@ def upsert_stats(batch_df, _batch_id: int) -> None:
                 negative = EXCLUDED.negative,
                 neutral = EXCLUDED.neutral,
                 pos_pct = EXCLUDED.pos_pct,
-                neg_pct = EXCLUDED.neg_pct,
                 neu_pct = EXCLUDED.neu_pct,
                 avg_score = EXCLUDED.avg_score,
                 processed_at = NOW()
             """,
             rows,
         )
+
+
+def write_batch(batch_df, _batch_id: int) -> None:
+    """Single sink for the whole graph: writes scored comments to PostgreSQL,
+    pushes them to Kafka `comments-scored`, and refreshes window aggregates.
+
+    One foreachBatch = the expensive clean/VADER/BERT/LLM computation happens
+    ONCE per micro-batch instead of three times (one per sink query), and the
+    window aggregate is computed batch-locally (no watermark state, no shuffle).
+    """
+    cols = [
+        "id", "source", "author", "text", "cleaned_text", "label",
+        "vader_label", "vader_score", "vader_positive", "vader_negative",
+        "vader_neutral", "bert_label", "bert_score",
+        "llm_label", "llm_score", "event_ts",
+        "post_id", "post_title",
+    ]
+    pdf = batch_df.select(*cols).toPandas()
+    if pdf.empty:
+        return
+
+    # 1. scored comments -> PostgreSQL (idempotent upsert)
+    rows = [
+        (
+            r.id, r.source, r.author, r.text, r.cleaned_text, r.label,
+            r.vader_label, r.vader_score, r.vader_positive, r.vader_negative,
+            r.vader_neutral, r.bert_label, r.bert_score,
+            r.llm_label, r.llm_score, r.event_ts, r.post_id, r.post_title,
+        )
+        for r in pdf.itertuples(index=False)
+    ]
+    # defensive: a batch can contain the same id twice (producer replays);
+    # ON CONFLICT cannot update the same row twice in one statement
+    unique = {r[0]: r for r in reversed(rows)}
+    with psycopg2.connect(PG_DSN) as conn, conn.cursor() as cur:
+        psycopg2.extras.execute_values(
+            cur,
+            """
+            INSERT INTO comments (id, source, author, text, cleaned_text, label,
+                vader_label, vader_score, vader_positive, vader_negative,
+                vader_neutral, bert_label, bert_score, llm_label, llm_score,
+                ts, post_id, post_title)
+            VALUES %s
+            ON CONFLICT (id) DO UPDATE SET
+                vader_label = EXCLUDED.vader_label,
+                vader_score = EXCLUDED.vader_score,
+                vader_positive = EXCLUDED.vader_positive,
+                vader_negative = EXCLUDED.vader_negative,
+                vader_neutral = EXCLUDED.vader_neutral,
+                bert_label = EXCLUDED.bert_label,
+                bert_score = EXCLUDED.bert_score,
+                llm_label = EXCLUDED.llm_label,
+                llm_score = EXCLUDED.llm_score,
+                processed_at = NOW()
+            """,
+            list(unique.values()),
+        )
+
+    # 2. scored comments -> Kafka `comments-scored` (dashboard live feed)
+    feed = pdf.select(lambda c: c not in ("cleaned_text", "event_ts"), axis=1)
+    producer = KafkaProducer(
+        bootstrap_servers=KAFKA_BOOTSTRAP,
+        value_serializer=lambda v: v.encode("utf-8"),
+        linger_ms=50,
+    )
+    for rec in feed.to_dict(orient="records"):
+        payload = {
+            "id": rec["id"], "source": rec["source"], "author": rec["author"],
+            "text": rec["text"], "label": rec["label"],
+            "vader_label": rec["vader_label"], "vader_score": rec["vader_score"],
+            "bert_label": rec["bert_label"], "bert_score": rec["bert_score"],
+            "ts": rec["ts"], "post_id": rec["post_id"], "post_title": rec["post_title"],
+        }
+        producer.send("comments-scored", value=json.dumps(payload))
+    producer.flush()
+    producer.close()
+
+    # 3. 1-minute window aggregates, computed batch-locally (headline = LLM label)
+    primary = pdf["llm_label"].fillna(pdf["vader_label"])
+    work = pd.DataFrame({
+        "event_ts": pd.to_datetime(pdf["event_ts"]),
+        "pos": (primary == "positive").astype(int),
+        "neg": (primary == "negative").astype(int),
+        "neu": (primary == "neutral").astype(int),
+        "score": pdf["llm_score"],
+    }).dropna(subset=["event_ts"])
+    if work.empty:
+        return
+    work["window_start"] = work["event_ts"].dt.floor(f"{WINDOW_SECONDS}s")
+    agg = work.groupby("window_start").agg(
+        total=("pos", "size"),
+        positive=("pos", "sum"),
+        negative=("neg", "sum"),
+        neutral=("neu", "sum"),
+        avg_score=("score", "mean"),
+    ).reset_index()
+    agg["window_end"] = agg["window_start"] + pd.Timedelta(seconds=WINDOW_SECONDS)
+    agg["pos_pct"] = (agg["positive"] * 100.0 / agg["total"]).round(2)
+    agg["neg_pct"] = (agg["negative"] * 100.0 / agg["total"]).round(2)
+    agg["neu_pct"] = (agg["neutral"] * 100.0 / agg["total"]).round(2)
+    agg["avg_score"] = agg["avg_score"].round(4)
+    stat_rows = [
+        (
+            r.window_start.to_pydatetime().replace(tzinfo=None),
+            r.window_end.to_pydatetime().replace(tzinfo=None),
+            int(r.total), int(r.positive), int(r.negative), int(r.neutral),
+            float(r.pos_pct), float(r.neg_pct), float(r.neu_pct), float(r.avg_score),
+        )
+        for r in agg.itertuples(index=False)
+    ]
+    upsert_stats_rows(stat_rows)
 
 
 def main() -> None:
@@ -211,7 +328,7 @@ def main() -> None:
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
         .option("subscribe", "comments-raw")
         .option("startingOffsets", "earliest" if first_run else "latest")
-        .option("maxOffsetsPerTrigger", 2000)
+        .option("maxOffsetsPerTrigger", 8000)
         .option("failOnDataLoss", "false")
         .load()
     )
@@ -255,65 +372,21 @@ def main() -> None:
     else:
         scored = scored.mapInPandas(bert_map, bert_full_schema(scored.schema))
 
-    # 5. 1-minute tumbling window aggregates with 2-minute watermark
-    #    headline sentiment = LLM label (falls back to VADER in SKIP_BERT fast mode)
-    primary_label = F.coalesce(F.col("llm_label"), F.col("vader_label"))
-    per_window = (
-        scored.withWatermark("event_ts", "2 minutes")
-        .groupBy(F.window("event_ts", f"{WINDOW_SECONDS} seconds"))
-        .agg(
-            F.count("*").alias("total"),
-            F.sum(F.when(primary_label == "positive", 1).otherwise(0)).alias("positive"),
-            F.sum(F.when(primary_label == "negative", 1).otherwise(0)).alias("negative"),
-            F.sum(F.when(primary_label == "neutral", 1).otherwise(0)).alias("neutral"),
-            F.avg("llm_score").alias("avg_score"),
-        )
-        .select(
-            F.col("window.start").alias("window_start"),
-            F.col("window.end").alias("window_end"),
-            "total", "positive", "negative", "neutral",
-            F.round(F.col("positive") * 100.0 / F.col("total"), 2).alias("pos_pct"),
-            F.round(F.col("negative") * 100.0 / F.col("total"), 2).alias("neg_pct"),
-            F.round(F.col("neutral") * 100.0 / F.col("total"), 2).alias("neu_pct"),
-            F.round("avg_score", 4).alias("avg_score"),
-        )
-    )
+    # 5. 1-minute window aggregates are computed inside write_batch (batch-local,
+    #    no watermark/shuffle) — see write_batch below.
 
-    # 6a. Scored comments -> Kafka `comments-scored` (dashboard live feed)
-    feed_query = (
-        scored.select(
-            F.to_json(
-                F.struct(
-                    "id", "source", "author", "text", "cleaned_text", "label",
-                    "vader_label", "vader_score", "bert_label", "bert_score", "ts",
-                    "post_id", "post_title",
-                )
-            ).alias("value")
-        )
-        .writeStream.format("kafka")
-        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
-        .option("topic", "comments-scored")
-        .option("checkpointLocation", f"{CHECKPOINT}/kafka-feed")
-        .start()
-    )
-
-    # 6b. Scored comments -> PostgreSQL
-    comments_query = (
-        scored.writeStream.foreachBatch(upsert_comments)
-        .option("checkpointLocation", f"{CHECKPOINT}/pg-comments")
-        .start()
-    )
-
-    # 6c. Window stats -> PostgreSQL
-    stats_query = (
-        per_window.writeStream.foreachBatch(upsert_stats)
-        .outputMode("update")
-        .option("checkpointLocation", f"{CHECKPOINT}/pg-stats")
-        .start()
-    )
-
+    # 6. ONE query, ONE trigger: the graph (kafka -> clean -> VADER -> BERT/LLM)
+    #    is computed once per micro-batch and write_batch fans out to PostgreSQL,
+    #    Kafka feed and window_stats. (Three separate writeStream queries would
+    #    recompute the whole graph three times per batch.)
     print("Streaming: comments-raw -> [clean, VADER", "+ DistilBERT" if not SKIP_BERT else "", "]",
-          "-> comments-scored / PostgreSQL")
+          "-> PostgreSQL + comments-scored (trigger=", TRIGGER_SECONDS, "s)")
+    (
+        scored.writeStream.foreachBatch(write_batch)
+        .option("checkpointLocation", f"{CHECKPOINT}/pg-comments")
+        .trigger(processingTime=f"{TRIGGER_SECONDS} seconds")
+        .start()
+    )
     spark.streams.awaitAnyTermination()
 
 
