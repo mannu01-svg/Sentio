@@ -87,7 +87,7 @@ def bert_full_schema(base_schema: T.StructType) -> T.StructType:
 def build_spark() -> SparkSession:
     return (
         SparkSession.builder.appName("social-media-sentiment")
-        .master(os.getenv("SPARK_MASTER", "local[8]"))
+        .master(os.getenv("SPARK_MASTER", "local[6]"))
         .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4")
         .config("spark.sql.shuffle.partitions", "4")
         .config("spark.driver.memory", "4g")
@@ -124,55 +124,6 @@ def bert_map(iterator):
             pdf["llm_label"] = None
             pdf["llm_score"] = None
         yield pdf
-
-
-def upsert_comments(batch_df, _batch_id: int) -> None:
-    """Write one micro-batch of scored comments to PostgreSQL (idempotent upsert)."""
-    rows = [
-        (
-            r["id"], r["source"], r["author"], r["text"], r["cleaned_text"], r["label"],
-            r["vader_label"], r["vader_score"], r["vader_positive"], r["vader_negative"],
-            r["vader_neutral"], r["bert_label"], r["bert_score"],
-            r["llm_label"], r["llm_score"], r["event_ts"],
-            r["post_id"], r["post_title"],
-        )
-        for r in batch_df.select(
-            "id", "source", "author", "text", "cleaned_text", "label",
-            "vader_label", "vader_score", "vader_positive", "vader_negative",
-            "vader_neutral", "bert_label", "bert_score",
-            "llm_label", "llm_score", "event_ts",
-            "post_id", "post_title",
-        ).collect()
-    ]
-    if not rows:
-        return
-    # defensive: a batch can contain the same id twice (producer replays);
-    # ON CONFLICT cannot update the same row twice in one statement
-    unique = {r[0]: r for r in reversed(rows)}
-    rows = list(unique.values())
-    with psycopg2.connect(PG_DSN) as conn, conn.cursor() as cur:
-        psycopg2.extras.execute_values(
-            cur,
-            """
-            INSERT INTO comments (id, source, author, text, cleaned_text, label,
-                vader_label, vader_score, vader_positive, vader_negative,
-                vader_neutral, bert_label, bert_score, llm_label, llm_score,
-                ts, post_id, post_title)
-            VALUES %s
-            ON CONFLICT (id) DO UPDATE SET
-                vader_label = EXCLUDED.vader_label,
-                vader_score = EXCLUDED.vader_score,
-                vader_positive = EXCLUDED.vader_positive,
-                vader_negative = EXCLUDED.vader_negative,
-                vader_neutral = EXCLUDED.vader_neutral,
-                bert_label = EXCLUDED.bert_label,
-                bert_score = EXCLUDED.bert_score,
-                llm_label = EXCLUDED.llm_label,
-                llm_score = EXCLUDED.llm_score,
-                processed_at = NOW()
-            """,
-            rows,
-        )
 
 
 def upsert_stats_rows(rows: list[tuple]) -> None:
@@ -213,7 +164,7 @@ def write_batch(batch_df, _batch_id: int) -> None:
         "id", "source", "author", "text", "cleaned_text", "label",
         "vader_label", "vader_score", "vader_positive", "vader_negative",
         "vader_neutral", "bert_label", "bert_score",
-        "llm_label", "llm_score", "event_ts",
+        "llm_label", "llm_score", "event_ts", "ts",
         "post_id", "post_title",
     ]
     pdf = batch_df.select(*cols).toPandas()
@@ -226,7 +177,7 @@ def write_batch(batch_df, _batch_id: int) -> None:
             r.id, r.source, r.author, r.text, r.cleaned_text, r.label,
             r.vader_label, r.vader_score, r.vader_positive, r.vader_negative,
             r.vader_neutral, r.bert_label, r.bert_score,
-            r.llm_label, r.llm_score, r.event_ts, r.post_id, r.post_title,
+            r.llm_label, r.llm_score, r.ts, r.post_id, r.post_title,
         )
         for r in pdf.itertuples(index=False)
     ]
@@ -258,7 +209,7 @@ def write_batch(batch_df, _batch_id: int) -> None:
         )
 
     # 2. scored comments -> Kafka `comments-scored` (dashboard live feed)
-    feed = pdf.select(lambda c: c not in ("cleaned_text", "event_ts"), axis=1)
+    feed = pdf.drop(columns=["cleaned_text", "event_ts"])
     producer = KafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP,
         value_serializer=lambda v: v.encode("utf-8"),

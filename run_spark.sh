@@ -15,7 +15,7 @@ export PYSPARK_DRIVER_PYTHON="$ROOT/.venv/bin/python"
 # inference, ~200s/batch). Export a custom var that survives and read it in
 # nlp.warm() via torch.set_num_threads AFTER load (set_num_interop after init
 # deadlocks forked workers, so only intraop is set).
-export NLP_TORCH_THREADS="${NLP_TORCH_THREADS:-6}"
+export NLP_TORCH_THREADS="${NLP_TORCH_THREADS:-8}"
 
 export PYTHONUNBUFFERED=1
 export PYTHONFAULTHANDLER=1

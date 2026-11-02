@@ -94,8 +94,18 @@ def main() -> None:
         compute_metrics=compute_metrics,
     )
 
+    ckpt_dir = os.path.join(ROOT, "models", "training", "checkpoints")
+    ckpts = sorted(
+        (d for d in os.listdir(ckpt_dir) if d.startswith("checkpoint-")),
+        key=lambda d: int(d.split("-")[1]),
+    ) if os.path.isdir(ckpt_dir) else []
+    resume_path = os.path.join(ckpt_dir, ckpts[-1]) if ckpts else None
+    train_kwargs = {"resume_from_checkpoint": resume_path} if resume_path else {}
+    if resume_path:
+        print(f"resuming from {resume_path}")
+
     print(f"training on {len(ds['train'])} rows for {args.epochs} epochs …")
-    trainer.train()
+    trainer.train(**train_kwargs)
     metrics = trainer.evaluate()
     print(f"validation accuracy: {metrics['eval_accuracy']*100:.2f}%")
 
