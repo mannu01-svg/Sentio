@@ -1114,13 +1114,14 @@ def topics_stream(req: TopicStreamRequest):
         # stream FRESH dataset comments matching the topic (real comments, live-scored)
         topic_words = {w for w in re.findall(r"[a-z']{3,}", topic.lower())}
         with db() as conn, conn.cursor() as cur:
+            # search the FULL pool for this source (a topic's real tweets/comments
+            # carry old dataset timestamps and fall outside any recent-N window)
             cur.execute(
                 """
                 SELECT id, author, text, post_id, post_title, ts
                 FROM comments
                 WHERE source = %s
                 ORDER BY ts DESC NULLS LAST
-                LIMIT 8000
                 """,
                 (source,),
             )
