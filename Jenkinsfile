@@ -40,7 +40,7 @@ pipeline {
         stage("Unit Tests") {
             steps {
                 sh """
-                    ${VENV}/bin/python -m pytest tests/test_nlp.py -v
+                    ${VENV}/bin/python -m pytest tests/ -v
                 """
             }
         }
