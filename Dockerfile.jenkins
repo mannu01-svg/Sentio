@@ -1,0 +1,14 @@
+# Jenkins CI image for the Sentio pipeline.
+# The stock jenkins/jenkins:lts has no python3/node — the Jenkinsfile's stages
+# (Setup Python, Unit Tests, Frontend Build) need them on the built-in agent.
+# Build once, then run exactly like the stock image:
+#   docker build -t sentio-jenkins -f Dockerfile.jenkins .
+#   (run_jenkins.sh does this automatically)
+
+FROM jenkins/jenkins:lts
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-venv python3-pip nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+USER jenkins

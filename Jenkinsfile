@@ -24,7 +24,7 @@ pipeline {
             steps {
                 sh """
                     python3 -m venv ${VENV}
-                    ./${VENV}/bin/pip install -q kafka-python-ng vaderSentiment fastapi 'uvicorn[standard]' psycopg2-binary pandas httpx pytest pyarrow
+                    ./${VENV}/bin/pip install -q kafka-python-ng vaderSentiment fastapi 'uvicorn[standard]' psycopg2-binary pandas httpx pytest pyarrow transformers torch --index-url https://pypi.org/simple
                 """
             }
         }

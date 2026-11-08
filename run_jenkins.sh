@@ -29,11 +29,15 @@ fi
 # clean up a stopped instance with the same name
 docker rm -f "$JENKINS_NAME" >/dev/null 2>&1 || true
 
-echo "▶ starting Jenkins LTS (first run pulls ~350MB, one-time)…"
+echo "▶ building the sentio-jenkins image (python3 + node on the agent, one-time)…"
+docker build -q -t sentio-jenkins -f Dockerfile.jenkins . >/dev/null \
+  || { echo "❌ image build failed — check Dockerfile.jenkins"; exit 1; }
+
+echo "▶ starting Jenkins (first run pulls ~350MB, one-time)…"
 docker run -d --name "$JENKINS_NAME" \
   -p "${JENKINS_PORT}:8080" -p 50000:50000 \
   -v "${JENKINS_NAME}_home:/var/jenkins_home" \
-  jenkins/jenkins:lts >/dev/null
+  sentio-jenkins >/dev/null
 
 echo -n "▶ waiting for Jenkins to come up"
 for i in $(seq 1 60); do
