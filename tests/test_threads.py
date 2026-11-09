@@ -93,10 +93,10 @@ def test_fetch_account_dispatcher_unknown():
 
 def test_persist_env_roundtrip(tmp_path, monkeypatch):
     import api.main as api_main
-    env_file = tmp_path / ".env.local"
-    env_file.write_text("# comment\nEXISTING=1\n")
-
     real_open = open
+    env_file = tmp_path / ".env.local"
+    with real_open(env_file, "w") as f:
+        f.write("# comment\nEXISTING=1\n")
 
     def fake_open(path, *a, **kw):
         if ".env.local" in str(path):
@@ -105,9 +105,11 @@ def test_persist_env_roundtrip(tmp_path, monkeypatch):
 
     monkeypatch.setattr("builtins.open", fake_open)
     api_main._persist_env("NEW_KEY", "val1")
-    content = env_file.read_text()
+    with real_open(env_file) as f:
+        content = f.read()
     assert "NEW_KEY=val1" in content
     api_main._persist_env("NEW_KEY", "val2")
-    content = env_file.read_text()
+    with real_open(env_file) as f:
+        content = f.read()
     assert "NEW_KEY=val2" in content and "val1" not in content
     assert "EXISTING=1" in content and "# comment" in content

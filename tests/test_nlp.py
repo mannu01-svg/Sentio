@@ -3,9 +3,29 @@
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "spark"))
 
 from nlp import clean_text, llm_analyze, vader_label, vader_analyze  # noqa: E402
+
+
+def _llm_model_cached() -> bool:
+    """True when the cardiffnlp model is in the local HF cache (offline-safe)."""
+    import glob
+
+    cache = os.path.expanduser(
+        "~/.cache/huggingface/hub/models--cardiffnlp--twitter-roberta-base-sentiment-latest"
+    )
+    return bool(glob.glob(os.path.join(cache, "snapshots", "*", "model*.safetensors")))
+
+
+# cardiffnlp model tests need the cached weights (scripts/warmup_models.py downloads them);
+# bare CI containers without the cache (and without HF hub access) skip these 4 tests.
+_llm_cached = pytest.mark.skipif(
+    not _llm_model_cached(),
+    reason="cardiffnlp model not cached — run scripts/warmup_models.py",
+)
 
 
 class TestCleanText:
@@ -59,6 +79,7 @@ class TestVaderAnalyze:
         assert set(out) == {"vader_label", "vader_score", "vader_positive", "vader_negative", "vader_neutral"}
 
 
+@_llm_cached
 class TestLlmAnalyze:
     """Tests for the cardiffnlp tweet-trained LLM (model must be cached — warmup_models.py)."""
 
