@@ -827,10 +827,11 @@ def accounts():
 # Threads OAuth: consent URL + code exchange + connection status
 # ---------------------------------------------------------------------------
 
-def _persist_env(key: str, value: str):
+def _persist_env(key: str, value: str, env_path: str | None = None):
     """Persist KEY=value into .env.local (idempotent, keeps comments/other lines)."""
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env.local")
-    env_path = os.path.normpath(env_path)
+    if env_path is None:
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env.local")
+        env_path = os.path.normpath(env_path)
     lines = []
     if os.path.exists(env_path):
         with open(env_path) as f:
