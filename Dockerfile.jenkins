@@ -1,14 +1,23 @@
 # Jenkins CI image for the Sentio pipeline.
-# The stock jenkins/jenkins:lts has no python3/node — the Jenkinsfile's stages
-# (Setup Python, Unit Tests, Frontend Build) need them on the built-in agent.
-# Build once, then run exactly like the stock image:
+# The stock jenkins/jenkins:lts has no python3/node/docker — the Jenkinsfile's
+# stages (Setup Python, Unit Tests, Frontend Build, Docker Compose Config)
+# need them on the built-in agent. Build once, then run exactly like the
+# stock image (run_jenkins.sh does this automatically):
 #   docker build -t sentio-jenkins -f Dockerfile.jenkins .
-#   (run_jenkins.sh does this automatically)
+#   docker run -v /var/run/docker.sock:/var/run/docker.sock ... sentio-jenkins
 
 FROM jenkins/jenkins:lts
 
 USER root
+# docker CLI from the official Docker apt repo (Debian's docker.io ships only dockerd)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-venv python3-pip nodejs npm \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg python3 python3-venv python3-pip nodejs npm \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
+# jenkins user (uid 1000) needs access to the mounted docker.sock
+RUN groupadd -f docker && usermod -aG docker jenkins
 USER jenkins

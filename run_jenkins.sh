@@ -37,6 +37,7 @@ echo "▶ starting Jenkins (first run pulls ~350MB, one-time)…"
 docker run -d --name "$JENKINS_NAME" \
   -p "${JENKINS_PORT}:8080" -p 50000:50000 \
   -v "${JENKINS_NAME}_home:/var/jenkins_home" \
+  -v /var/run/docker.sock:/var/run/docker.sock \
   sentio-jenkins >/dev/null
 
 echo -n "▶ waiting for Jenkins to come up"
