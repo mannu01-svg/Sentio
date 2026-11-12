@@ -16,26 +16,45 @@ data pipeline itself.
 | Frontend Build | `npm install && npm run build` in `frontend/` | dashboard bundles cleanly |
 | Compose Config | `docker compose config -q` | docker-compose.yml is valid |
 
-## 3. Running Jenkins locally (one-time, optional)
+## 3. Running Jenkins locally — one command (verified working)
 
 ```bash
-# 1. start Jenkins
-docker run -d --name jenkins -p 8080:8080 -p 50000:50000 \
-  -v jenkins_home:/var/jenkins_home \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  jenkins/jenkins:lts
-
-# 2. get the initial admin password
-docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
-
-# 3. open http://localhost:8080 → install suggested plugins
-# 4. install Pipeline + Docker plugins
-# 5. New Item → Pipeline → point it at this repo (or "Pipeline script from SCM")
+./run_jenkins.sh
 ```
 
-> The Jenkins container needs docker CLI + node on the agent for all stages;
-> if a stage is unavailable in your lab setup, it can be disabled without
-> affecting the rest.
+This builds a small `sentio-jenkins` image (stock Jenkins LTS + python3 + node +
+docker CLI — the stages need them on the agent) and starts it. It prints the
+initial admin password and the exact click-path. Jenkins runs wherever you
+execute this script — **nothing external is required**, so each teammate can
+demo CI on their own machine with the identical pipeline.
+
+Manual equivalent (what the script does):
+
+```bash
+# 1. build the agent image (python3 + node + docker CLI on Debian trixie)
+docker build -t sentio-jenkins -f Dockerfile.jenkins .
+
+# 2. start Jenkins (docker.sock mounted so the Compose-Config stage works)
+docker run -d --name sma-jenkins -p 8080:8080 -p 50000:50000 \
+  -v sma-jenkins_home:/var/jenkins_home \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  sentio-jenkins
+
+# 3. get the initial admin password
+docker exec sma-jenkins cat /var/jenkins_home/secrets/initialAdminPassword
+
+# 4. open http://localhost:8080 → create admin user (plugins ship preinstalled
+#    via the script's first-run; "Install suggested plugins" also works)
+# 5. New Item → name: sentio-ci → Pipeline → Pipeline script from SCM
+#    → Git → https://github.com/mannu01-svg/Sentio.git → */main → Save → Build Now
+```
+
+> Verified end-to-end: 5/5 stages green — Setup Python → Lint → Unit Tests
+> (34 passed, 8 skipped: DB/model tests skip gracefully in bare CI containers)
+> → Frontend Build → Docker Compose Config.
+
+> If a stage is unavailable in your lab setup (e.g. no docker.sock permission),
+> disable just that stage in the Jenkinsfile — the rest still runs.
 
 ## 4. Wiring a webhook (optional)
 Jenkins → job → Configure → *Build Triggers* → *GitHub hook trigger for

@@ -393,6 +393,18 @@ cd frontend && npm run build      # production build check
 cd frontend && npm run lint       # oxlint
 ```
 
+### Jenkins CI (one command, demo on your own machine)
+
+```bash
+./run_jenkins.sh    # builds sentio-jenkins image + starts Jenkins on :8080
+```
+
+Then: open `http://localhost:8080` → paste the printed admin password →
+New Item → `sentio-ci` → Pipeline → *Pipeline script from SCM* →
+`https://github.com/mannu01-svg/Sentio.git` → `*/main` → Build Now.
+Five stages: Setup Python → Lint → Unit Tests → Frontend Build → Compose Config.
+Full details in `docs/06_Jenkins_Guide.md`.
+
 `docs/` contains the full academic/documentation set:
 
 | Doc | Content |
@@ -427,6 +439,8 @@ data/raw/                   7 Kaggle datasets, 274k rows total
 db/init.sql                 Postgres schema (comments · users · history · window_stats)
 docker-compose.yml          Kafka (KRaft) + PostgreSQL, healthchecks
 start.sh / stop.sh          one-command lifecycle (auto-bootstraps everything)
+run_jenkins.sh              one-command Jenkins CI demo (builds agent image too)
+Dockerfile.jenkins          Jenkins LTS + python3 + node + docker CLI
 bootstrap.sh                first-run setup (venv, npm, JDK, weights, demo user)
 Jenkinsfile                 CI: lint → tests → frontend build → compose check
 tests/                      42 pytest cases
