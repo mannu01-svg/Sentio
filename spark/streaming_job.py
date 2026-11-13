@@ -90,7 +90,8 @@ def build_spark() -> SparkSession:
         .master(os.getenv("SPARK_MASTER", "local[6]"))
         .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4")
         .config("spark.sql.shuffle.partitions", "4")
-        .config("spark.driver.memory", "4g")
+        # laptops: SPARK_DRIVER_MEMORY=2g SPARK_MASTER=local[4] if 16GB RAM
+        .config("spark.driver.memory", os.getenv("SPARK_DRIVER_MEMORY", "4g"))
         # mapInPandas: hand each worker >=256 rows so transformer batching pays off
         .config("spark.sql.execution.arrow.maxRecordsPerBatch", "512")
         .config("spark.sql.execution.arrow.pyspark.enabled", "true")

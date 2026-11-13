@@ -57,9 +57,8 @@ will fetch its real comments (via `yt-dlp` / PullPush) and push them through the
 | ~6 GB free RAM | — | Kafka + Postgres containers + Spark + models |
 | ~4 GB disk | — | Python env, node_modules, model weights, datasets |
 
-> **Windows note:** run everything inside **Git Bash**, **WSL**, or **WSL2** (recommended).
-> `./start.sh` is a bash script. In WSL2 it runs natively; in Git Bash it also works as long as
-> Docker Desktop is running.
+> **Windows note:** just double-click **`start.bat`** — no WSL/Git Bash needed.
+> (Power users can also run `./start.sh` inside WSL2 if they prefer a bash environment.)
 
 Everything else (Python packages, npm packages, JDK, sentiment models, datasets) is installed
 **automatically** on first run.
@@ -67,6 +66,17 @@ Everything else (Python packages, npm packages, JDK, sentiment models, datasets)
 ---
 
 ## Quickstart
+
+**One command per platform — everything (installs, infra, services) is automatic:**
+
+| Platform | Command | Notes |
+|---|---|---|
+| **Linux** | `./start.sh` | the reference implementation |
+| **macOS** | `./start.sh` | identical — Intel & Apple Silicon (JDK auto-download picks the right build; `brew install python@3.12` if needed) |
+| **Windows** | double-click **`start.bat`** | or run it from any terminal; `stop.bat` stops everything |
+
+Prerequisites (system apps, can't be auto-installed): **Docker Desktop** (running),
+**Node.js 18+**, **Python 3.10–3.12**. Everything else is installed automatically.
 
 ### 1. Clone
 
@@ -78,26 +88,34 @@ cd Sentio
 ### 2. Start
 
 ```bash
-./start.sh
+./start.sh            # Linux / macOS
+start.bat             # Windows (double-click, or run from a terminal)
 ```
 
 That's it. The first run does everything automatically (~10–15 min on decent internet, mostly one-time):
 
 - creates a Python virtualenv + installs all packages
 - `npm install` for the frontend
-- downloads JDK 17 to `~/.tools/jdk-17` (no admin rights needed; skipped if you have Java)
+- downloads JDK 17 to `~/.tools/jdk-17` (no admin rights needed; skipped if you have Java — brew openjdk works)
 - rejoins the fine-tuned model weights from committed chunks
 - downloads the two HuggingFace sentiment models (one-time, ~5 min)
 - starts Kafka + PostgreSQL containers, creates topics, seeds the DB
 - seeds a **demo login user** (below)
 - starts Spark, producer, API, and dashboard, then verifies every service
 
-**Variants:**
+**Variants (Linux/macOS):**
 
 ```bash
 ./start.sh --fast     # skip transformer models — runs in ~1 min, VADER only (quick demo)
 ./start.sh --fresh    # wipe DB + checkpoints for a clean demo state
 ./stop.sh             # stop everything (data is kept)
+```
+
+**Laptops with 16GB RAM:** lower Spark's footprint before starting (optional):
+
+```bash
+export SPARK_MASTER=local[4] SPARK_DRIVER_MEMORY=2g   # Linux/macOS
+set SPARK_MASTER=local[4] && set SPARK_DRIVER_MEMORY=2g   # Windows
 ```
 
 ### 3. Open the app
@@ -438,10 +456,13 @@ evaluation/evaluate.py      accuracy / F1 / confusion matrices vs dataset labels
 data/raw/                   7 Kaggle datasets, 274k rows total
 db/init.sql                 Postgres schema (comments · users · history · window_stats)
 docker-compose.yml          Kafka (KRaft) + PostgreSQL, healthchecks
-start.sh / stop.sh          one-command lifecycle (auto-bootstraps everything)
+start.sh / stop.sh          one-command lifecycle — Linux & macOS (auto-bootstraps everything)
+start.bat / stop.bat        one-command lifecycle — Windows (double-click)
+run_spark.bat               Windows Spark launcher (Java 17 + env setup)
+bootstrap.sh                first-run setup (venv, npm, JDK, weights, demo user)
+scripts/seed_demo_user.py   cross-platform demo-user seed (all OSes)
 run_jenkins.sh              one-command Jenkins CI demo (builds agent image too)
 Dockerfile.jenkins          Jenkins LTS + python3 + node + docker CLI
-bootstrap.sh                first-run setup (venv, npm, JDK, weights, demo user)
 Jenkinsfile                 CI: lint → tests → frontend build → compose check
 tests/                      42 pytest cases
 ```

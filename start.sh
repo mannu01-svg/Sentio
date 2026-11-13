@@ -25,8 +25,9 @@ LOGS="$ROOT/logs"
 mkdir -p "$LOGS"
 
 # preflight ---------------------------------------------------------------
-command -v docker >/dev/null || { echo "❌ docker not found — install docker first"; exit 1; }
+command -v docker >/dev/null || { echo "❌ docker not found — install Docker Desktop first"; exit 1; }
 command -v node >/dev/null || { echo "❌ node.js not found — install node 18+ first"; exit 1; }
+command -v python3 >/dev/null || { echo "❌ python3 not found — install python 3.10-3.12 first"; exit 1; }
 [ -f "$ROOT/data/raw/all_sources.csv" ] || { echo "⚠️  data/raw/all_sources.csv missing — falling back to sample dataset"; SAMPLE=1; }
 
 # fresh clone? bootstrap everything (venv, node_modules, JDK, model weights, demo user)
@@ -111,17 +112,32 @@ echo "▶ [6/7] starting services..."
 SKIP_BERT_FLAG=""
 [ "$FAST" = "1" ] && SKIP_BERT_FLAG="1"
 
-( setsid nohup env SKIP_BERT=$SKIP_BERT_FLAG ./run_spark.sh > "$LOGS/spark.log" 2>&1 < /dev/null & echo $! > "$LOGS/spark.pid" )
+# portable detached launch: setsid is Linux-only, so fall back to a plain
+# subshell + nohup on macOS/BSD (nohup already detaches from the terminal)
+run_bg() { # run_bg "logfile" "pidfile" cmd...
+  local LOGF="$1" PIDF="$2"; shift 2
+  if command -v setsid >/dev/null 2>&1; then
+    ( setsid nohup "$@" > "$LOGF" 2>&1 < /dev/null & echo $! > "$PIDF" )
+  else
+    ( nohup "$@" > "$LOGF" 2>&1 < /dev/null & echo $! > "$PIDF" )
+  fi
+}
+
+run_bg "$LOGS/spark.log" "$LOGS/spark.pid" env SKIP_BERT=$SKIP_BERT_FLAG ./run_spark.sh
 
 DATA_FILE="data/raw/all_sources.csv"
 [ "${SAMPLE:-0}" = "1" ] && DATA_FILE="data/sample_comments.csv"
 # seed one pass so the dashboard starts populated, then idle; the API's
 # "Go live" button writes logs/live-stream.json to trigger high-rate bursts
-( setsid nohup "$ROOT/.venv/bin/python" producer/producer.py --file "$DATA_FILE" --seed "${SEED_ROWS:-6000}" --shuffle > "$LOGS/producer.log" 2>&1 < /dev/null & echo $! > "$LOGS/producer.pid" )
+run_bg "$LOGS/producer.log" "$LOGS/producer.pid" "$ROOT/.venv/bin/python" producer/producer.py --file "$DATA_FILE" --seed "${SEED_ROWS:-6000}" --shuffle
 
-( setsid nohup "$ROOT/.venv/bin/uvicorn" api.main:app --port 8000 > "$LOGS/api.log" 2>&1 < /dev/null & echo $! > "$LOGS/api.pid" )
+run_bg "$LOGS/api.log" "$LOGS/api.pid" "$ROOT/.venv/bin/uvicorn" api.main:app --port 8000
 
-( cd "$ROOT/frontend" && setsid nohup npm run dev > "$LOGS/frontend.log" 2>&1 < /dev/null & echo $! > "$LOGS/frontend.pid" )
+( cd "$ROOT/frontend" && if command -v setsid >/dev/null 2>&1; then
+    setsid nohup npm run dev > "$LOGS/frontend.log" 2>&1 < /dev/null & echo $! > "$LOGS/frontend.pid"
+  else
+    nohup npm run dev > "$LOGS/frontend.log" 2>&1 < /dev/null & echo $! > "$LOGS/frontend.pid"
+  fi )
 
 # verify -------------------------------------------------------------------
 echo -n "▶ [7/7] verifying services"
@@ -133,8 +149,9 @@ for i in $(seq 1 12); do
 done
 echo
 
-SPARK_ALIVE=$(pgrep -fc "streaming_job.py" 2>/dev/null || echo 0)
-PROD_ALIVE=$(pgrep -fc "producer/producer.py" 2>/dev/null || echo 0)
+# pgrep -c is Linux-only; the wc -l form works on macOS/BSD too
+SPARK_ALIVE=$(pgrep -f "streaming_job.py" 2>/dev/null | wc -l | tr -d ' ')
+PROD_ALIVE=$(pgrep -f "producer/producer.py" 2>/dev/null | wc -l | tr -d ' ')
 API_ALIVE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health 2>/dev/null || echo 000)
 FRONT_PORT=$(grep -oE "localhost:[0-9]+" "$LOGS/frontend.log" 2>/dev/null | head -1 | cut -d: -f2)
 FRONT_PORT=${FRONT_PORT:-5173}

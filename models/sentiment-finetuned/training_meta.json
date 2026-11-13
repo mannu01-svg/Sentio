@@ -5,7 +5,7 @@
     "negative",
     "neutral"
   ],
-  "val_accuracy_pct": 56.4,
-  "train_rows": 2000,
-  "epochs": 1
+  "val_accuracy_pct": 84.2,
+  "train_rows": 63603,
+  "epochs": 3
 }
