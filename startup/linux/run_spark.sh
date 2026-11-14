@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 # Launch the Spark Structured Streaming job with the local JDK on PATH.
 set -e
-cd "$(dirname "$0")"
-ROOT="$(pwd)"
+# repo root: resolve from this script's location (works from linux/, mac/, or repo root)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "$(basename "$SCRIPT_DIR")" in
+  # startup/<platform>/ -> repo root is two levels up
+  linux|mac|windows) ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")" ;;
+  startup)           ROOT="$(dirname "$SCRIPT_DIR")" ;;          # startup/ itself
+  *)                 ROOT="$SCRIPT_DIR" ;;                       # repo root
+esac
+cd "$ROOT"
 
 export JAVA_HOME="${JAVA_HOME:-$HOME/.tools/jdk-17}"
 export PATH="$JAVA_HOME/bin:$PATH"

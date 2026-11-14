@@ -1,7 +1,9 @@
 # Windows: run the Spark streaming job with Java 17 on PATH.
 # Called by start.bat. Keeps the same env contract as run_spark.sh.
 @echo off
-cd /d "%~dp0"
+rem repo root: this script lives in startup\windows\ — the project root is two levels up
+cd /d "%~dp0..\.."
+set "BATDIR=%~dp0"
 
 if defined JAVA_HOME if exist "%JAVA_HOME%\bin\java.exe" goto run
 
@@ -20,4 +22,4 @@ set PYSPARK_DRIVER_PYTHON=%cd%\.venv\Scripts\python.exe
 set PYTHONUNBUFFERED=1
 set NLP_TORCH_THREADS=4
 
-".venv\Scripts\python.exe" spark\streaming_job.py
+"%cd%\.venv\Scripts\python.exe" "%cd%\spark\streaming_job.py"

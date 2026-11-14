@@ -53,12 +53,12 @@ will fetch its real comments (via `yt-dlp` / PullPush) and push them through the
 | **Docker Desktop** | any recent | [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) |
 | **Node.js** | 18 or newer | [nodejs.org](https://nodejs.org/) (LTS is fine) |
 | **Python** | 3.10 – 3.12 | [python.org](https://www.python.org/downloads/) (macOS: `brew install python@3.12`; Windows: check "Add to PATH" in installer) |
-| **Java 17** | 17.x | **auto-downloaded by `./start.sh`** — no action needed unless you already have a JDK |
+| **Java 17** | 17.x | **auto-downloaded by the startup script** — no action needed unless you already have a JDK |
 | ~6 GB free RAM | — | Kafka + Postgres containers + Spark + models |
 | ~4 GB disk | — | Python env, node_modules, model weights, datasets |
 
-> **Windows note:** just double-click **`start.bat`** — no WSL/Git Bash needed.
-> (Power users can also run `./start.sh` inside WSL2 if they prefer a bash environment.)
+> **Windows note:** just double-click **`startup/windows/start.bat`** — no WSL/Git Bash needed.
+> (Power users can also run `startup/linux/start.sh` inside WSL2 if they prefer a bash environment.)
 
 Everything else (Python packages, npm packages, JDK, sentiment models, datasets) is installed
 **automatically** on first run.
@@ -71,9 +71,9 @@ Everything else (Python packages, npm packages, JDK, sentiment models, datasets)
 
 | Platform | Command | Notes |
 |---|---|---|
-| **Linux** | `./start.sh` | the reference implementation |
-| **macOS** | `./start.sh` | identical — Intel & Apple Silicon (JDK auto-download picks the right build; `brew install python@3.12` if needed) |
-| **Windows** | double-click **`start.bat`** | or run it from any terminal; `stop.bat` stops everything |
+| **Linux** | `startup/linux/start.sh` | the reference implementation |
+| **macOS** | `startup/mac/start.sh` | identical — Intel & Apple Silicon (JDK auto-download picks the right build; `brew install python@3.12` if needed) |
+| **Windows** | double-click **`startup/windows/start.bat`** | or run from any terminal; `stop.bat` stops everything |
 
 Prerequisites (system apps, can't be auto-installed): **Docker Desktop** (running),
 **Node.js 18+**, **Python 3.10–3.12**. Everything else is installed automatically.
@@ -88,8 +88,9 @@ cd Sentio
 ### 2. Start
 
 ```bash
-./start.sh            # Linux / macOS
-start.bat             # Windows (double-click, or run from a terminal)
+startup/linux/start.sh    # Linux
+startup/mac/start.sh      # macOS
+startup/windows/start.bat # Windows (double-click, or run from a terminal)
 ```
 
 That's it. The first run does everything automatically (~10–15 min on decent internet, mostly one-time):
@@ -106,9 +107,9 @@ That's it. The first run does everything automatically (~10–15 min on decent i
 **Variants (Linux/macOS):**
 
 ```bash
-./start.sh --fast     # skip transformer models — runs in ~1 min, VADER only (quick demo)
-./start.sh --fresh    # wipe DB + checkpoints for a clean demo state
-./stop.sh             # stop everything (data is kept)
+startup/linux/start.sh --fast     # skip transformer models — quick demo (VADER only)
+startup/linux/start.sh --fresh    # wipe DB + checkpoints for a clean demo state
+startup/linux/stop.sh             # stop everything (data is kept)
 ```
 
 **Laptops with 16GB RAM:** lower Spark's footprint before starting (optional):
@@ -120,7 +121,7 @@ set SPARK_MASTER=local[4] && set SPARK_DRIVER_MEMORY=2g   # Windows
 
 ### 3. Open the app
 
-When `./start.sh` finishes it prints a status box. Then open:
+When the start script finishes it prints a status box. Then open:
 
 | URL | What |
 |---|---|
@@ -259,7 +260,7 @@ on first run). Retrain it yourself:
 ### Bundled (works out of the box)
 - `data/sample_comments.csv` — 50 labeled comments, zero setup.
 - `data/raw/all_sources.csv` — a **144,800-row** merged dataset across 6 platforms
-  (this is what `./start.sh` seeds from by default).
+  (this is what the start script seeds from by default).
 
 ### Kaggle datasets (already merged into `data/raw/`)
 | Platform | Rows | Source dataset |
@@ -363,21 +364,21 @@ Everything works with defaults. Optional overrides (create `.env.local` — giti
 
 ## Troubleshooting
 
-**`./start.sh` prints red for Spark** → `tail -100 logs/spark.log`. After an unclean shutdown,
+**The start script prints red for Spark** → `tail -100 logs/spark.log`. After an unclean shutdown,
 Spark occasionally wedges (`py4j ... Received empty command`). Fix:
 
 ```bash
-./stop.sh
+startup/linux/stop.sh
 pkill -9 -f pyspark.daemon
 rm -rf checkpoints
-./start.sh
+startup/linux/start.sh
 ```
 
 **Containers won't start / port 5432 or 9092 busy** → a stale container or process holds the port:
 
 ```bash
 docker rm -f sma-kafka sma-postgres
-./start.sh
+startup/linux/start.sh
 ```
 
 **Dashboard empty after start** → the seed pass takes ~40 s to score; watch `logs/spark.log`
@@ -389,16 +390,16 @@ for `[Stage…]` progress, or press **Go Live** to force traffic.
 **Model download fails / HF warnings** → rerun `.venv/bin/python scripts/warmup_models.py`,
 or just restart — Spark retries downloads on start.
 
-**Fresh demo state** → `./start.sh --fresh` truncates the DB and resets checkpoints.
+**Fresh demo state** → `startup/linux/start.sh --fresh` truncates the DB and resets checkpoints.
 
 **Nuclear option** (wipes data, rebuilds infra):
 
 ```bash
-./stop.sh
+startup/linux/stop.sh
 docker rm -f sma-kafka sma-postgres
 docker volume rm sentiment_pgdata 2>/dev/null
 rm -rf checkpoints
-./start.sh
+startup/linux/start.sh
 ```
 
 ---
@@ -456,10 +457,9 @@ evaluation/evaluate.py      accuracy / F1 / confusion matrices vs dataset labels
 data/raw/                   7 Kaggle datasets, 274k rows total
 db/init.sql                 Postgres schema (comments · users · history · window_stats)
 docker-compose.yml          Kafka (KRaft) + PostgreSQL, healthchecks
-start.sh / stop.sh          one-command lifecycle — Linux & macOS (auto-bootstraps everything)
-start.bat / stop.bat        one-command lifecycle — Windows (double-click)
-run_spark.bat               Windows Spark launcher (Java 17 + env setup)
-bootstrap.sh                first-run setup (venv, npm, JDK, weights, demo user)
+startup/linux/               start.sh · stop.sh · run_spark.sh · bootstrap.sh
+startup/mac/                 same scripts (identical, macOS-safe)
+startup/windows/             start.bat · stop.bat · run_spark.bat (double-click)
 scripts/seed_demo_user.py   cross-platform demo-user seed (all OSes)
 run_jenkins.sh              one-command Jenkins CI demo (builds agent image too)
 Dockerfile.jenkins          Jenkins LTS + python3 + node + docker CLI

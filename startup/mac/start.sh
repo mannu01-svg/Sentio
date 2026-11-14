@@ -2,14 +2,22 @@
 # ---------------------------------------------------------------------------
 # One command to run the entire sentiment-analysis pipeline.
 #
-#   ./start.sh            full mode (VADER + DistilBERT)
-#   ./start.sh --fast     skip DistilBERT (lighter, quicker demo)
-#   ./start.sh --fresh    truncate DB + reset topics/checkpoints first
+#   mac/start.sh            full mode (VADER + DistilBERT)
+#   mac/start.sh --fast     skip DistilBERT (lighter, quicker demo)
+#   mac/start.sh --fresh    truncate DB + reset topics/checkpoints first
 #
-# Stops: ./stop.sh      Logs: tail -f logs/<spark|producer|api|frontend>.log
+# Stops: mac/stop.sh      Logs: tail -f logs/<spark|producer|api|frontend>.log
 # ---------------------------------------------------------------------------
 set -e
-cd "$(dirname "$0")"
+# repo root: resolve from this script's location (works from linux/, mac/, or repo root)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "$(basename "$SCRIPT_DIR")" in
+  # startup/<platform>/ -> repo root is two levels up
+  linux|mac|windows) ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")" ;;
+  startup)           ROOT="$(dirname "$SCRIPT_DIR")" ;;          # startup/ itself
+  *)                 ROOT="$SCRIPT_DIR" ;;                       # repo root
+esac
+cd "$ROOT"
 
 FAST=0
 FRESH=0
@@ -32,10 +40,10 @@ command -v python3 >/dev/null || { echo "❌ python3 not found — install pytho
 
 # fresh clone? bootstrap everything (venv, node_modules, JDK, model weights, demo user)
 if [ ! -d "$ROOT/.venv" ] || [ ! -d "$ROOT/frontend/node_modules" ]; then
-  bash "$ROOT/bootstrap.sh"
+  bash "$SCRIPT_DIR/bootstrap.sh"
 else
   # even on an existing setup, make sure weights + demo user exist (cheap checks)
-  bash "$ROOT/bootstrap.sh" >/dev/null 2>&1 || true
+  bash "$SCRIPT_DIR/bootstrap.sh" >/dev/null 2>&1 || true
 fi
 
 # secrets (.env.local — canonical SCREAMING_SNAKE_CASE=VALUE lines) → export
@@ -53,7 +61,7 @@ if [ -f "$ROOT/.env.local" ]; then
 fi
 
 # stop anything already running from a previous start ----------------------
-"$ROOT/stop.sh" >/dev/null 2>&1 || true
+"$SCRIPT_DIR/stop.sh" >/dev/null 2>&1 || true
 
 echo "▶ [1/6] docker compose up..."
 # container names are fixed (sma-kafka/sma-postgres): a previous run's stale
@@ -74,7 +82,7 @@ echo "   kafka + postgres healthy"
 
 # containers are now up — complete any bootstrap steps that were skipped
 # on the very first run (e.g. the demo login user seed)
-bash "$ROOT/bootstrap.sh" 2>&1 | grep -E "→|✓|⚠" || true
+bash "$SCRIPT_DIR/bootstrap.sh" 2>&1 | grep -E "→|✓|⚠" || true
 
 # topics (idempotent) ------------------------------------------------------
 echo "▶ [3/7] ensuring kafka topics..."
@@ -123,7 +131,7 @@ run_bg() { # run_bg "logfile" "pidfile" cmd...
   fi
 }
 
-run_bg "$LOGS/spark.log" "$LOGS/spark.pid" env SKIP_BERT=$SKIP_BERT_FLAG ./run_spark.sh
+run_bg "$LOGS/spark.log" "$LOGS/spark.pid" env SKIP_BERT=$SKIP_BERT_FLAG "$SCRIPT_DIR/run_spark.sh"
 
 DATA_FILE="data/raw/all_sources.csv"
 [ "${SAMPLE:-0}" = "1" ] && DATA_FILE="data/sample_comments.csv"
@@ -165,4 +173,4 @@ echo "────────────────────────�
 [ "$FRONT_OK" = "200" ] && echo "🟢 Dashboard         http://localhost:$FRONT_PORT" || echo "🔴 Dashboard         — check logs/frontend.log"
 [ "$FAST" = "1" ] && echo "⚡ fast mode: DistilBERT skipped" || echo "🧠 full mode: VADER + DistilBERT"
 echo "─────────────────────────────────────────────────────"
-echo "stop everything:  ./stop.sh"
+echo "stop everything:  mac/stop.sh"

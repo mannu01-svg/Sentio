@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Stop every service started by ./start.sh (containers are kept; data intact).
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "$(basename "$SCRIPT_DIR")" in linux|mac|windows) cd "$(dirname "$(dirname "$SCRIPT_DIR")")";; startup) cd "$(dirname "$SCRIPT_DIR")";; *) cd "$SCRIPT_DIR";; esac
 
 for pidfile in logs/*.pid; do
   [ -f "$pidfile" ] || continue

@@ -17,7 +17,9 @@
 @echo off
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
-set ROOT=%cd%
+rem repo root: this script lives in startup\windows\ — the project root is two levels up
+for %%i in ("%~dp0..\..") do set ROOT=%%~fi
+cd /d "%ROOT%"
 
 echo ===============================================
 echo  Sentio - one-command setup (Windows)
@@ -80,7 +82,7 @@ echo [6/7] demo user...
 echo [7/7] starting services (separate windows)...
 if not exist logs mkdir logs
 
-start "sentio-spark" /min cmd /c "run_spark.bat > logs\spark.log 2>&1"
+start "sentio-spark" /min cmd /c ""%~dp0run_spark.bat" > logs\spark.log 2>&1"
 start "sentio-producer" /min cmd /c '".venv\Scripts\python.exe" producer\producer.py --file data\raw\all_sources.csv --seed 6000 --shuffle > logs\producer.log 2>&1'
 start "sentio-api" /min cmd /c '".venv\Scripts\python.exe" -m uvicorn api.main:app --port 8000 > logs\api.log 2>&1'
 start "sentio-frontend" /min cmd /c "cd frontend && npm run dev > ..\logs\frontend.log 2>&1"

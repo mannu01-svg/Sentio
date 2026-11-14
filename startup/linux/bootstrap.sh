@@ -11,8 +11,15 @@
 #   - demo login user
 # ---------------------------------------------------------------------------
 set -e
-cd "$(dirname "$0")"
-ROOT="$(pwd)"
+# repo root: resolve from this script's location (works from linux/, mac/, or repo root)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "$(basename "$SCRIPT_DIR")" in
+  # startup/<platform>/ -> repo root is two levels up
+  linux|mac|windows) ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")" ;;
+  startup)           ROOT="$(dirname "$SCRIPT_DIR")" ;;          # startup/ itself
+  *)                 ROOT="$SCRIPT_DIR" ;;                       # repo root
+esac
+cd "$ROOT"
 
 echo "▶ [0/6] bootstrapping environment (one-time setup)"
 
