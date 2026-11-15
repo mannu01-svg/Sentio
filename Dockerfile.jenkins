@@ -20,4 +20,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 # jenkins user (uid 1000) needs access to the mounted docker.sock
 RUN groupadd -f docker && usermod -aG docker jenkins
+# bake pipeline plugins so the first visit to the UI is zero-click
+# (run_jenkins.sh AUTO mode: no "install suggested plugins" wizard)
+COPY jenkins/plugins.txt /plugins.txt
+RUN jenkins-plugin-cli -f /plugins.txt --latest false && rm /plugins.txt
 USER jenkins

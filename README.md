@@ -67,13 +67,13 @@ Everything else (Python packages, npm packages, JDK, sentiment models, datasets)
 
 ## Quickstart
 
-**One command per platform — everything (installs, infra, services) is automatic:**
+**One command per platform — everything (installs, infra, services, Jenkins CI) is automatic:**
 
 | Platform | Command | Notes |
 |---|---|---|
-| **Linux** | `startup/linux/start.sh` | the reference implementation |
-| **macOS** | `startup/mac/start.sh` | identical — Intel & Apple Silicon (JDK auto-download picks the right build; `brew install python@3.12` if needed) |
-| **Windows** | double-click **`startup/windows/start.bat`** | or run from any terminal; `stop.bat` stops everything |
+| **Linux** | `startup/linux/setup.sh` | the reference implementation |
+| **macOS** | `startup/mac/setup.sh` | identical — Intel & Apple Silicon (JDK auto-download picks the right build; `brew install python@3.12` if needed) |
+| **Windows** | double-click **`startup/windows/setup.bat`** | or run from any terminal; `stop.bat` stops everything |
 
 Prerequisites (system apps, can't be auto-installed): **Docker Desktop** (running),
 **Node.js 18+**, **Python 3.10–3.12**. Everything else is installed automatically.
@@ -85,15 +85,15 @@ git clone https://github.com/mannu01-svg/Sentio.git
 cd Sentio
 ```
 
-### 2. Start
+### 2. Setup + run (single command)
 
 ```bash
-startup/linux/start.sh    # Linux
-startup/mac/start.sh      # macOS
-startup/windows/start.bat # Windows (double-click, or run from a terminal)
+bash startup/linux/setup.sh    # Linux
+bash startup/mac/setup.sh      # macOS
+startup/windows/setup.bat      # Windows (double-click, or run from a terminal)
 ```
 
-That's it. The first run does everything automatically (~10–15 min on decent internet, mostly one-time):
+That's it. The first run does everything automatically (~15–20 min on decent internet, mostly one-time):
 
 - creates a Python virtualenv + installs all packages
 - `npm install` for the frontend
@@ -103,6 +103,9 @@ That's it. The first run does everything automatically (~10–15 min on decent i
 - starts Kafka + PostgreSQL containers, creates topics, seeds the DB
 - seeds a **demo login user** (below)
 - starts Spark, producer, API, and dashboard, then verifies every service
+- starts **Jenkins CI** zero-click (below): admin user + `sentio-ci` pipeline job + first build queued automatically
+
+Just want the app without Jenkins? Use `start.sh` / `start.bat` instead of `setup.sh` / `setup.bat`.
 
 **Variants (Linux/macOS):**
 
@@ -415,13 +418,13 @@ cd frontend && npm run lint       # oxlint
 ### Jenkins CI (one command, demo on your own machine)
 
 ```bash
-./run_jenkins.sh    # builds sentio-jenkins image + starts Jenkins on :8080
+./run_jenkins.sh          # manual mode: Jenkins up + click-path printed
+AUTO=1 ./run_jenkins.sh   # zero-click: admin sentio/sentio123 + sentio-ci job + first build queued
 ```
 
-Then: open `http://localhost:8080` → paste the printed admin password →
-New Item → `sentio-ci` → Pipeline → *Pipeline script from SCM* →
-`https://github.com/mannu01-svg/Sentio.git` → `*/main` → Build Now.
-Five stages: Setup Python → Lint → Unit Tests → Frontend Build → Compose Config.
+`startup/*/setup.sh` (and `setup.bat`) already runs Jenkins in AUTO mode —
+the flow above is for when you want Jenkins on its own. Five stages:
+Setup Python → Lint → Unit Tests → Frontend Build → Compose Config.
 Full details in `docs/06_Jenkins_Guide.md`.
 
 `docs/` contains the full academic/documentation set:
@@ -457,12 +460,13 @@ evaluation/evaluate.py      accuracy / F1 / confusion matrices vs dataset labels
 data/raw/                   7 Kaggle datasets, 274k rows total
 db/init.sql                 Postgres schema (comments · users · history · window_stats)
 docker-compose.yml          Kafka (KRaft) + PostgreSQL, healthchecks
-startup/linux/               start.sh · stop.sh · run_spark.sh · bootstrap.sh
+startup/linux/               setup.sh · start.sh · stop.sh · run_spark.sh · bootstrap.sh
 startup/mac/                 same scripts (identical, macOS-safe)
-startup/windows/             start.bat · stop.bat · run_spark.bat (double-click)
+startup/windows/             setup.bat · start.bat · stop.bat · run_spark.bat (double-click)
+jenkins/                     plugins.txt + init.groovy.d (zero-click Jenkins AUTO mode)
 scripts/seed_demo_user.py   cross-platform demo-user seed (all OSes)
-run_jenkins.sh              one-command Jenkins CI demo (builds agent image too)
-Dockerfile.jenkins          Jenkins LTS + python3 + node + docker CLI
+run_jenkins.sh              Jenkins CI setup (manual or AUTO=1 zero-click)
+Dockerfile.jenkins          Jenkins LTS + python3 + node + docker CLI + baked plugins
 Jenkinsfile                 CI: lint → tests → frontend build → compose check
 tests/                      42 pytest cases
 ```

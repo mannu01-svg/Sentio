@@ -1,0 +1,19 @@
+# Jenkins plugins baked into the sentio-jenkins image (Dockerfile.jenkins
+# runs `jenkins-plugin-cli -f /plugins.txt`). This is what makes the first
+# visit to localhost:8090 zero-click: no "install suggested plugins" step.
+# Minimal set for the Sentio pipeline (Jenkinsfile):
+#   - pipeline + workflow job stages
+#   - git SCM for "Pipeline script from SCM"
+#   - docker-workflow for docker compose config checks
+#   - credentials + cloudbees-folder required by pipeline
+workflow-aggregator
+workflow-job
+workflow-cps
+git
+git-client
+cloudbees-folder
+credentials-binding
+docker-workflow
+pipeline-stage-view
+timestamper
+blueocean
