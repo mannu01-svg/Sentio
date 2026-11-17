@@ -19,3 +19,8 @@ The producer auto-detects common column names:
 - id/author: `id`, `comment_id`, `COMMENT_ID`, `author`, `AUTHOR`
 
 `data/raw/` is gitignored (datasets are large); the sample CSV is committed.
+
+> The one-off dataset-builder scripts (`build_datasets.py`, `textlang.py`,
+> Kaggle probes, the legacy llm_label backfill) were removed after the final
+> `all_sources.csv` was built — recover them from git history if you ever
+> need to re-merge raw CSVs from scratch.
