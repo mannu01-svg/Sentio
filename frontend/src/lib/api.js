@@ -1,5 +1,16 @@
 const BASE = ""
 
+// the logged-in user (set by AuthProvider in localStorage) — attached to every
+// analyze call so history is attributed to the account that ran it
+export function currentUserEmail() {
+  try {
+    const raw = localStorage.getItem("sentio-user")
+    return raw ? (JSON.parse(raw)?.email ?? null) : null
+  } catch {
+    return null
+  }
+}
+
 async function get(path) {
   const res = await fetch(`${BASE}${path}`)
   if (!res.ok) throw new Error(`${path}: ${res.status}`)
@@ -36,29 +47,49 @@ export const fetchTrends = (limit = 10, source) => {
 }
 export const fetchAlerts = () => get("/api/alerts")
 export const fetchSpam = (limit = 2000) => get(`/api/spam?limit=${limit}`)
-export const fetchPosts = () => get("/api/posts")
-export const fetchAccounts = () => get("/api/accounts")
-export const fetchHistory = ({ kind, platform, limit = 100 } = {}) => {
+export const fetchPosts = ({ user } = {}) => {
+  const params = new URLSearchParams()
+  const userEmail = user ?? currentUserEmail()
+  if (userEmail) params.set("user", userEmail)
+  const qs = params.toString()
+  return get(`/api/posts${qs ? `?${qs}` : ""}`)
+}
+export const fetchAccounts = ({ user } = {}) => {
+  const params = new URLSearchParams()
+  const userEmail = user ?? currentUserEmail()
+  if (userEmail) params.set("user", userEmail)
+  const qs = params.toString()
+  return get(`/api/accounts${qs ? `?${qs}` : ""}`)
+}
+export const fetchHistory = ({ kind, platform, user, limit = 100 } = {}) => {
   const params = new URLSearchParams({ limit })
+  const userEmail = user ?? currentUserEmail()
   if (kind) params.set("kind", kind)
   if (platform) params.set("platform", platform)
+  if (userEmail) params.set("user", userEmail)
   return get(`/api/history?${params}`)
 }
 export const fetchPipeline = () => get("/api/pipeline")
 export const fetchTrending = () => get("/api/trending")
-export const fetchTopicStreams = () => get("/api/topics/streams")
+export const fetchTopicStreams = ({ user } = {}) => {
+  const params = new URLSearchParams()
+  const userEmail = user ?? currentUserEmail()
+  if (userEmail) params.set("user", userEmail)
+  const qs = params.toString()
+  return get(`/api/topics/streams${qs ? `?${qs}` : ""}`)
+}
 export const fetchStreamStatus = () => get("/api/stream/status")
 export const startLiveStream = ({ minutes = 3, rate = 40 } = {}) =>
   post("/api/stream/live", { minutes, rate })
 export const stopLiveStream = () => post("/api/stream/stop", {})
 export const keywordSearch = ({ platform, keyword, limit = 100 }) =>
-  post("/api/keyword-search", { platform, keyword, limit })
+  post("/api/keyword-search", { platform, keyword, limit, user_email: currentUserEmail() })
 
 // ---- actions ----
 export const analyzePost = ({ url, mode = "auto", limit = 100, title }) =>
-  post("/api/analyze", { url, mode, limit, title })
+  post("/api/analyze", { url, mode, limit, title, user_email: currentUserEmail() })
 export const analyzeAccount = ({ platform, handle, limit = 100, max_videos = 5 }) =>
-  post("/api/analyze-account", { platform, handle, limit, max_videos })
+  post("/api/analyze-account", { platform, handle, limit, max_videos, user_email: currentUserEmail() })
 export const fetchThreadsStatus = () => get("/api/threads/status")
 export const threadsAuthUrl = () => get("/api/threads/auth-url")
 export const loginRequest = ({ email, password }) =>

@@ -27,6 +27,8 @@ CREATE INDEX IF NOT EXISTS idx_comments_ts        ON comments (ts);
 CREATE INDEX IF NOT EXISTS idx_comments_source    ON comments (source);
 CREATE INDEX IF NOT EXISTS idx_comments_vader     ON comments (vader_label);
 CREATE INDEX IF NOT EXISTS idx_comments_post      ON comments (post_id);
+-- speeds the topic-match ILIKE scan (keyword search / topic streams)
+CREATE INDEX IF NOT EXISTS idx_comments_source_text ON comments (source, lower(left(text, 200)) text_pattern_ops);
 
 -- App accounts (signup / login)
 CREATE TABLE IF NOT EXISTS users (
@@ -39,6 +41,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 -- every analysis the user runs (link / account / keyword / topic / paste)
 -- so all history is preserved and viewable later, even across API restarts
+-- user_email ties every analysis to the account that ran it
 CREATE TABLE IF NOT EXISTS history (
     id            SERIAL PRIMARY KEY,
     kind          TEXT NOT NULL,             -- post | account | topic | keyword
@@ -49,9 +52,11 @@ CREATE TABLE IF NOT EXISTS history (
     keyword       TEXT,                      -- keyword / topic searched
     posts         TEXT,                      -- comma-separated post ids belonging to this analysis
     comments_published INTEGER DEFAULT 0,
+    user_email    TEXT,                      -- who ran it (users.email)
     created_at    TIMESTAMP DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_history_created ON history (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_history_user ON history (user_email);
 
 CREATE TABLE IF NOT EXISTS window_stats (
     window_start  TIMESTAMP NOT NULL,

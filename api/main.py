@@ -62,6 +62,41 @@ def db():
     return psycopg2.connect(**PG_CONFIG, cursor_factory=psycopg2.extras.RealDictCursor)
 
 
+def _ensure_history_table():
+    """Idempotent migration: the history table was added after the first
+    postgres start (init.sql only runs on first init), so existing databases
+    need the CREATE + ALTER at API startup. Never blocks the app."""
+    try:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS history (
+                    id            SERIAL PRIMARY KEY,
+                    kind          TEXT NOT NULL,
+                    post_id       TEXT,
+                    title         TEXT,
+                    platform      TEXT,
+                    handle        TEXT,
+                    keyword       TEXT,
+                    posts         TEXT,
+                    comments_published INTEGER DEFAULT 0,
+                    user_email    TEXT,
+                    created_at    TIMESTAMP DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute("ALTER TABLE history ADD COLUMN IF NOT EXISTS user_email TEXT")
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_history_created ON history (created_at DESC)"
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_history_user ON history (user_email)")
+    except psycopg2.Error:
+        pass  # history stays best-effort — the pipeline must never block on it
+
+
+_ensure_history_table()
+
+
 # ---------------------------------------------------------------------------
 # Auth: signup + login backed by the users table in PostgreSQL
 # ---------------------------------------------------------------------------
@@ -539,6 +574,7 @@ class AnalyzeRequest(BaseModel):
     mode: str = "auto"        # auto | paste
     limit: int = 100
     title: str | None = None  # only for paste mode
+    user_email: str | None = None  # who ran it (history attribution)
 
 
 class AnalyzeStatus:
@@ -560,17 +596,21 @@ ANALYZED = AnalyzeStatus()
 def _record_history(kind: str, *, post_id: str | None = None, title: str | None = None,
                     platform: str | None = None, handle: str | None = None,
                     keyword: str | None = None, posts: list[str] | None = None,
-                    comments_published: int = 0):
-    """Persist every analysis into the history table (survives API restarts)."""
+                    comments_published: int = 0, user_email: str | None = None):
+    """Persist every analysis into the history table (survives API restarts).
+
+    user_email ties the analysis to the account that ran it — /api/history
+    filters on it so every user only sees their own analyses."""
     try:
         with db() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO history (kind, post_id, title, platform, handle, keyword, posts, comments_published)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO history (kind, post_id, title, platform, handle, keyword, posts, comments_published, user_email)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (kind, post_id, title, platform, handle, keyword,
-                 ",".join(posts) if posts else None, comments_published),
+                 ",".join(posts) if posts else None, comments_published,
+                 user_email.strip().lower() if user_email else None),
             )
     except psycopg2.Error:
         pass  # history is best-effort — never block the analysis
@@ -579,8 +619,11 @@ def _record_history(kind: str, *, post_id: str | None = None, title: str | None 
 @app.get("/api/history")
 def history(kind: str | None = Query(None, description="post | account | topic | keyword"),
             platform: str | None = None,
+            user: str | None = Query(None, description="filter by the account that ran the analysis"),
             limit: int = Query(100, ge=1, le=500)):
-    """Every analysis ever run, newest first — links, accounts, keywords, topics, pastes."""
+    """Every analysis ever run, newest first — links, accounts, keywords, topics, pastes.
+
+    Pass ?user=<email> to see only the analyses run by that account."""
     clauses, params = ["1=1"], []
     if kind:
         clauses.append("kind = %s")
@@ -588,11 +631,14 @@ def history(kind: str | None = Query(None, description="post | account | topic |
     if platform:
         clauses.append("platform = %s")
         params.append(platform)
+    if user:
+        clauses.append("user_email = %s")
+        params.append(user.strip().lower())
     with db() as conn, conn.cursor() as cur:
         cur.execute(
             f"""
             SELECT id, kind, post_id, title, platform, handle, keyword, posts,
-                   comments_published, created_at
+                   comments_published, user_email, created_at
             FROM history
             WHERE {' AND '.join(clauses)}
             ORDER BY created_at DESC
@@ -662,6 +708,7 @@ def analyze(req: AnalyzeRequest):
         keyword=req.title if req.mode == "paste" else None,
         posts=[result["post_id"]],
         comments_published=sent,
+        user_email=req.user_email,
     )
     return {
         "status": "ok",
@@ -699,24 +746,45 @@ def _sentiment_payload(row: dict) -> dict:
 
 
 @app.get("/api/posts")
-def posts():
-    """Analyzed posts (URL/paste ingests) with their live sentiment summary."""
+def posts(user: str | None = Query(None, description="filter by the account that ran the analysis")):
+    """Analyzed posts (URL/paste ingests) with their live sentiment summary.
+
+    Reads from the history table (not memory) so analyses survive API restarts."""
+    clauses, params = ["kind IN ('post', 'keyword')"], []
+    if user:
+        clauses.append("user_email = %s")
+        params.append(user.strip().lower())
     out = []
     with db() as conn, conn.cursor() as cur:
-        for post_id, info in ANALYZED.posts.items():
+        cur.execute(
+            f"""
+            SELECT post_id, title, platform, user_email, max(created_at) AS analyzed_at
+            FROM history
+            WHERE {' AND '.join(clauses)} AND post_id IS NOT NULL
+            GROUP BY post_id, title, platform, user_email
+            ORDER BY analyzed_at DESC
+            LIMIT 100
+            """,
+            params,
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        for row in rows:
             cur.execute(
                 f"SELECT {_sentiment_select()} FROM comments WHERE post_id = %s",
-                (post_id,),
+                (row["post_id"],),
             )
-            row = dict(cur.fetchone())
-            total = row["total"] or 0
+            agg = dict(cur.fetchone())
+            total = agg["total"] or 0
             out.append({
-                **info,
+                "post_id": row["post_id"],
+                "post_title": row["title"],
+                "source": row["platform"],
+                "user_email": row["user_email"],
+                "analyzed_at": row["analyzed_at"].isoformat() if row["analyzed_at"] else None,
                 "scored": total,
-                "sentiment": _sentiment_payload(row),
-                "avg_score": round(float(row["avg_score"]), 3) if row["avg_score"] is not None else None,
+                "sentiment": _sentiment_payload(agg),
+                "avg_score": round(float(agg["avg_score"]), 3) if agg["avg_score"] is not None else None,
             })
-    out.sort(key=lambda p: p["analyzed_at"], reverse=True)
     return {"posts": out, "count": len(out)}
 
 
@@ -729,6 +797,7 @@ class AnalyzeAccountRequest(BaseModel):
     handle: str
     limit: int = 100         # comments per post
     max_videos: int = 5      # youtube only: how many recent videos
+    user_email: str | None = None  # who ran it (history attribution)
 
 
 ACCOUNTS = {}  # account_key -> {platform, handle, posts: [post_id...], analyzed_at}
@@ -778,6 +847,7 @@ def analyze_account(req: AnalyzeAccountRequest):
         handle=req.handle,
         posts=[p["post_id"] for p in post_infos],
         comments_published=published_total,
+        user_email=req.user_email,
     )
 
     return {
@@ -794,32 +864,53 @@ def analyze_account(req: AnalyzeAccountRequest):
 
 
 @app.get("/api/accounts")
-def accounts():
-    """Recently analyzed accounts with aggregate sentiment across all their posts."""
+def accounts(user: str | None = Query(None, description="filter by the account that ran the analysis")):
+    """Recently analyzed accounts with aggregate sentiment across all their posts.
+
+    Reads from the history table (not memory) so analyses survive API restarts."""
+    clauses, params = ["kind = 'account'"], []
+    if user:
+        clauses.append("user_email = %s")
+        params.append(user.strip().lower())
     out = []
     with db() as conn, conn.cursor() as cur:
-        for key, info in ACCOUNTS.items():
-            if not info["posts"]:
+        cur.execute(
+            f"""
+            SELECT id, title, platform, handle, posts, user_email, created_at
+            FROM history
+            WHERE {' AND '.join(clauses)}
+            ORDER BY created_at DESC
+            LIMIT 50
+            """,
+            params,
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        for row in rows:
+            post_ids = [p for p in (row["posts"] or "").split(",") if p]
+            if not post_ids:
                 continue
-            placeholders = ",".join(["%s"] * len(info["posts"]))
+            placeholders = ",".join(["%s"] * len(post_ids))
             cur.execute(
                 f"""
                 SELECT {_sentiment_select()}
                 FROM comments WHERE post_id IN ({placeholders})
                 """,
-                info["posts"],
+                post_ids,
             )
-            row = dict(cur.fetchone())
-            total = row["total"] or 0
+            agg = dict(cur.fetchone())
+            total = agg["total"] or 0
             out.append({
-                **info,
-                "account_key": key,
+                "account_key": f"{row['platform']}:{(row['handle'] or '').lstrip('@').lower()}",
+                "platform": row["platform"],
+                "handle": row["handle"],
+                "posts": post_ids,
+                "user_email": row["user_email"],
+                "analyzed_at": row["created_at"].isoformat() if row["created_at"] else None,
                 "scored": total,
-                "posts_count": len(info["posts"]),
-                "sentiment": _sentiment_payload(row),
-                "avg_score": round(float(row["avg_score"]), 3) if row["avg_score"] is not None else None,
+                "posts_count": len(post_ids),
+                "sentiment": _sentiment_payload(agg),
+                "avg_score": round(float(agg["avg_score"]), 3) if agg["avg_score"] is not None else None,
             })
-    out.sort(key=lambda a: a["analyzed_at"], reverse=True)
     return {"accounts": out, "count": len(out)}
 
 
@@ -1047,6 +1138,7 @@ class TopicStreamRequest(BaseModel):
     topic: str
     source: str = "youtube"   # youtube | x | reddit
     limit: int = 100          # comments to pull per post/video
+    user_email: str | None = None  # who ran it (history attribution)
 
 
 TOPIC_STREAMS = {}  # topic_key -> {source, topic, posts: [...], started_at}
@@ -1112,35 +1204,25 @@ def topics_stream(req: TopicStreamRequest):
 
     else:
         # reddit / x: their public APIs are bot-walled (403/521) or paid —
-        # stream FRESH dataset comments matching the topic (real comments, live-scored)
-        topic_words = {w for w in re.findall(r"[a-z']{3,}", topic.lower())}
+        # stream FRESH dataset comments matching the topic (real comments, live-scored).
+        # Matching runs in SQL (indexed on source) instead of a Python full-table
+        # scan — 3-4 simultaneous topic streams no longer stack 150k-row scans.
+        topic_words = [w for w in re.findall(r"[a-z']{3,}", topic.lower())][:6]
+        if not topic_words:
+            return {"status": "error", "message": f"No searchable words in topic '{topic}'"}
+        like_clauses = " OR ".join(["text ILIKE %s"] * len(topic_words))
         with db() as conn, conn.cursor() as cur:
-            # search the FULL pool for this source (a topic's real tweets/comments
-            # carry old dataset timestamps and fall outside any recent-N window)
             cur.execute(
-                """
-                SELECT id, author, text, post_id, post_title, ts
+                f"""
+                SELECT DISTINCT ON (lower(text)) id, author, text, post_id, post_title, ts
                 FROM comments
-                WHERE source = %s
-                ORDER BY ts DESC NULLS LAST
+                WHERE source = %s AND ({like_clauses})
+                ORDER BY lower(text), ts DESC NULLS LAST
+                LIMIT %s
                 """,
-                (source,),
+                (source, *[f"%{w}%" for w in topic_words], min(req.limit, 200)),
             )
-            rows = cur.fetchall()
-        matches = []
-        seen_texts = set()
-        for row in rows:
-            cid, author = row["id"], row["author"]
-            text, pid, ptitle, ts = row["text"], row["post_id"], row["post_title"], row["ts"]
-            tl = (text or "").lower()
-            if not tl or tl in seen_texts:
-                continue
-            hits = sum(1 for w in topic_words if w in tl)
-            if hits >= 1:
-                matches.append((cid, author, text, pid, ptitle, ts))
-                seen_texts.add(tl)
-                if len(matches) >= min(req.limit, 200):
-                    break
+            matches = cur.fetchall()
         if not matches:
             return {"status": "error", "message": f"No {source} comments about '{topic}' in the pool — try another topic"}
 
@@ -1151,14 +1233,14 @@ def topics_stream(req: TopicStreamRequest):
             {
                 "id": f"{topic_post_id}-{i}",
                 "source": source,
-                "author": author or "anonymous",
-                "text": text,
+                "author": row["author"] or "anonymous",
+                "text": row["text"],
                 "post_id": topic_post_id,
                 "post_title": f"Topic: {topic}",
                 "label": None,
                 "ts": now_iso,
             }
-            for i, (cid, author, text, pid, ptitle, ts) in enumerate(matches)
+            for i, row in enumerate(matches)
         ]
         sent = publisher.publish_comments(comments)
         published_total = sent
@@ -1185,6 +1267,7 @@ def topics_stream(req: TopicStreamRequest):
         keyword=topic,
         posts=[p["post_id"] for p in post_infos],
         comments_published=published_total,
+        user_email=req.user_email,
     )
     return {
         "status": "ok",
@@ -1200,31 +1283,52 @@ def topics_stream(req: TopicStreamRequest):
 
 
 @app.get("/api/topics/streams")
-def topics_streams():
-    """Recently started topic streams with their live sentiment."""
+def topics_streams(user: str | None = Query(None, description="filter by the account that ran the analysis")):
+    """Recently started topic streams with their live sentiment.
+
+    Reads from the history table (not memory) so analyses survive API restarts."""
+    clauses, params = ["kind = 'topic'"], []
+    if user:
+        clauses.append("user_email = %s")
+        params.append(user.strip().lower())
     out = []
     with db() as conn, conn.cursor() as cur:
-        for key, info in TOPIC_STREAMS.items():
-            if not info["posts"]:
+        cur.execute(
+            f"""
+            SELECT id, title, platform, keyword, posts, user_email, created_at
+            FROM history
+            WHERE {' AND '.join(clauses)}
+            ORDER BY created_at DESC
+            LIMIT 50
+            """,
+            params,
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        for row in rows:
+            post_ids = [p for p in (row["posts"] or "").split(",") if p]
+            if not post_ids:
                 continue
-            placeholders = ",".join(["%s"] * len(info["posts"]))
+            placeholders = ",".join(["%s"] * len(post_ids))
             cur.execute(
                 f"""
                 SELECT {_sentiment_select()}
                 FROM comments WHERE post_id IN ({placeholders})
                 """,
-                info["posts"],
+                post_ids,
             )
-            row = dict(cur.fetchone())
-            total = row["total"] or 0
+            agg = dict(cur.fetchone())
+            total = agg["total"] or 0
             out.append({
-                **info,
-                "stream_key": key,
+                "stream_key": f"{row['platform']}:{(row['keyword'] or '').lower()}",
+                "source": row["platform"],
+                "topic": row["keyword"],
+                "posts": post_ids,
+                "user_email": row["user_email"],
+                "started_at": row["created_at"].isoformat() if row["created_at"] else None,
                 "scored": total,
-                "sentiment": _sentiment_payload(row),
-                "avg_score": round(float(row["avg_score"]), 3) if row["avg_score"] is not None else None,
+                "sentiment": _sentiment_payload(agg),
+                "avg_score": round(float(agg["avg_score"]), 3) if agg["avg_score"] is not None else None,
             })
-    out.sort(key=lambda s: s["started_at"], reverse=True)
     return {"streams": out, "count": len(out)}
 
 
