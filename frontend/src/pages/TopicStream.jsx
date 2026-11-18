@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom"
 import {
   Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts"
-import { fetchComments, fetchPosts, exportUrl } from "../lib/api"
+import { fetchComments, fetchTopicStreams, exportUrl } from "../lib/api"
 import { usePolling } from "../lib/hooks"
 import { Card, SectionTitle, SentimentChip, EmptyState, Skeleton } from "../components/UI"
 import { PlatformBadge, PLATFORMS } from "../components/Brand"
@@ -59,16 +59,29 @@ export default function TopicStream() {
   const decodedTopic = decodeURIComponent(topic || "")
   const meta = PLATFORMS.find((p) => p.id === source)
 
-  const posts = usePolling(() => fetchPosts(), [], 5000)
-  const topicPosts = useMemo(() => {
-    const prefix = `topic-${source}-`
-    const lower = decodedTopic.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40)
-    return (posts.data?.posts ?? []).filter(
-      (p) => p.post_id.startsWith(prefix) && p.post_title.toLowerCase().includes(lower)
-    )
-  }, [posts.data, source, decodedTopic])
+  const streams = usePolling(() => fetchTopicStreams(), [], 5000)
+  // the stream record for this topic (history-driven; survives restarts).
+  // keyword match covers youtube topic streams whose posts carry real video ids
+  // instead of topic-<source>-<slug> ids.
+  const stream = useMemo(() => {
+    const all = streams.data?.streams ?? []
+    const lower = decodedTopic.toLowerCase()
+    return all.find((s) => s.source === source && (s.topic || "").toLowerCase() === lower)
+      ?? all.find((s) => s.source === source && (s.topic || "").toLowerCase().includes(lower))
+  }, [streams.data, source, decodedTopic])
 
-  const postIds = topicPosts.map((p) => p.post_id).join(",")
+  const postIds = stream?.posts ?? []
+  const topicPosts = useMemo(
+    () => (stream ? postIds.map((id, i) => ({
+      post_id: id,
+      post_title: stream.topic || decodedTopic,
+      source,
+      scored: stream.scored,
+      sentiment: stream.sentiment ?? { positive_pct: 0, negative_pct: 0, neutral_pct: 0 },
+      _first: i === 0,
+    })) : []),
+    [stream, postIds, source, decodedTopic]
+  )
 
   const comments = usePolling(
     () => Promise.all(
@@ -129,7 +142,7 @@ export default function TopicStream() {
             onClick={() => window.location.reload()}
             title="pull another batch of comments for this topic"
           >🔄 Refresh batch</button>
-          {postIds && <a className="btn" href={exportUrl({ post_id: topicPosts[0]?.post_id })}>⬇ Export</a>}
+          {postIds.length > 0 && <a className="btn" href={exportUrl({ post_id: topicPosts[0]?.post_id })}>⬇ Export</a>}
         </div>
       </div>
 
