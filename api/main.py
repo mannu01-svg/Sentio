@@ -1340,6 +1340,7 @@ class KeywordSearchRequest(BaseModel):
     platform: str = "youtube"  # youtube | x | reddit
     keyword: str
     limit: int = 100
+    user_email: str | None = None  # who ran it (history attribution)
 
 
 @app.post("/api/keyword-search")
@@ -1349,7 +1350,9 @@ def keyword_search(req: KeywordSearchRequest):
     youtube: real yt-dlp search for the keyword -> comments of the top videos (live fetch)
     x / reddit: topic-matched fresh batch from the dataset replay pool (APIs bot-walled)
     """
-    req_model = TopicStreamRequest(topic=req.keyword, source=req.platform, limit=req.limit)
+    req_model = TopicStreamRequest(
+        topic=req.keyword, source=req.platform, limit=req.limit, user_email=req.user_email
+    )
     return topics_stream(req_model)
 
 
