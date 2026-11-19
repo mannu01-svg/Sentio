@@ -81,6 +81,11 @@ export default function History() {
                       <span className="line-clamp-1 text-sm font-bold">{entry.title || entry.keyword || "Untitled analysis"}</span>
                       {entry.platform && <PlatformBadge source={entry.platform} size={12} />}
                       {entry.handle && <span className="chip !text-[10px]">@{entry.handle}</span>}
+                      {entry.user_email && (
+                        <span className="chip !text-[10px]" title="Account that ran this analysis">
+                          {entry.user_email}
+                        </span>
+                      )}
                     </div>
                     <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[10px]" style={{ color: "var(--text-faint)" }}>
                       <span>{meta.label}</span>
