@@ -616,6 +616,17 @@ def _record_history(kind: str, *, post_id: str | None = None, title: str | None 
         pass  # history is best-effort — never block the analysis
 
 
+def _require_user(user: str | None) -> str:
+    """Per-account endpoints are account-scoped: a missing user is a 401
+    (the frontend always sends it once logged in — guests are redirected
+    to /login by the Protected route wrapper)."""
+    if not user or not user.strip():
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=401, detail="login required — pass ?user=<email>")
+    return user.strip().lower()
+
+
 @app.get("/api/history")
 def history(kind: str | None = Query(None, description="post | account | topic | keyword"),
             platform: str | None = None,
@@ -624,6 +635,7 @@ def history(kind: str | None = Query(None, description="post | account | topic |
     """Every analysis ever run, newest first — links, accounts, keywords, topics, pastes.
 
     Pass ?user=<email> to see only the analyses run by that account."""
+    user = _require_user(user)
     clauses, params = ["1=1"], []
     if kind:
         clauses.append("kind = %s")
@@ -750,10 +762,8 @@ def posts(user: str | None = Query(None, description="filter by the account that
     """Analyzed posts (URL/paste ingests) with their live sentiment summary.
 
     Reads from the history table (not memory) so analyses survive API restarts."""
-    clauses, params = ["kind IN ('post', 'keyword')"], []
-    if user:
-        clauses.append("user_email = %s")
-        params.append(user.strip().lower())
+    user = _require_user(user)
+    clauses, params = ["kind IN ('post', 'keyword')", "user_email = %s"], [user]
     out = []
     with db() as conn, conn.cursor() as cur:
         cur.execute(
@@ -868,10 +878,8 @@ def accounts(user: str | None = Query(None, description="filter by the account t
     """Recently analyzed accounts with aggregate sentiment across all their posts.
 
     Reads from the history table (not memory) so analyses survive API restarts."""
-    clauses, params = ["kind = 'account'"], []
-    if user:
-        clauses.append("user_email = %s")
-        params.append(user.strip().lower())
+    user = _require_user(user)
+    clauses, params = ["kind = 'account'", "user_email = %s"], [user]
     out = []
     with db() as conn, conn.cursor() as cur:
         cur.execute(
@@ -1287,10 +1295,8 @@ def topics_streams(user: str | None = Query(None, description="filter by the acc
     """Recently started topic streams with their live sentiment.
 
     Reads from the history table (not memory) so analyses survive API restarts."""
-    clauses, params = ["kind = 'topic'"], []
-    if user:
-        clauses.append("user_email = %s")
-        params.append(user.strip().lower())
+    user = _require_user(user)
+    clauses, params = ["kind = 'topic'", "user_email = %s"], [user]
     out = []
     with db() as conn, conn.cursor() as cur:
         cur.execute(
