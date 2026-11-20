@@ -1,9 +1,13 @@
 # Data
 
-## Bundled
-- `sample_comments.csv` — 50 labeled YouTube-style comments (works out of the box with the producer).
+## Bundled (committed to the repo, ~54MB total)
+- `raw/all_sources.csv` — 35MB merged dataset (reddit · youtube · x · facebook · instagram), used by the producer for the live replay
+- `raw/reddit.csv`, `raw/youtube.csv`, `raw/x.csv`, `raw/facebook.csv`, `raw/instagram.csv` — per-source intermediates (kept for `evaluation/evaluate.py --csv` demos and re-merging)
+- `sample_comments.csv` — 50 labeled YouTube-style comments (works out of the box with the producer)
 
-## Download for full runs
+A fresh `git clone` has everything — no downloads, no extraction, no zip. `startup/*/start.sh` uses `raw/all_sources.csv` directly.
+
+## Want more data?
 Recommended Kaggle dataset (labels included):
 - **Twitter and Reddit Sentimental Analysis Dataset** — kaggle.com/datasets/cosmos98/twitter-and-reddit-sentimental-analysis-dataset
   - ~49k Reddit comments with `label` (positive/negative/neutral)
@@ -18,7 +22,7 @@ The producer auto-detects common column names:
 - label: `label`, `sentiment`, `category`, `CLASS`
 - id/author: `id`, `comment_id`, `COMMENT_ID`, `author`, `AUTHOR`
 
-`data/raw/` is gitignored (datasets are large); the sample CSV is committed.
+`data/raw/*.csv` are committed (54MB total); only spark-side artifacts (`.crc`, `_SUCCESS`) are gitignored.
 
 > The one-off dataset-builder scripts (`build_datasets.py`, `textlang.py`,
 > Kaggle probes, the legacy llm_label backfill) were removed after the final

@@ -260,10 +260,12 @@ on first run). Retrain it yourself:
 
 ## Where the data comes from
 
-### Bundled (works out of the box)
+### Bundled (works out of the box, committed to the repo ~54MB)
 - `data/sample_comments.csv` — 50 labeled comments, zero setup.
 - `data/raw/all_sources.csv` — a **144,800-row** merged dataset across 6 platforms
   (this is what the start script seeds from by default).
+- `data/raw/` per-source CSVs — committed too; a fresh `git clone` has every dataset,
+  no downloads or extraction needed.
 
 ### Kaggle datasets (already merged into `data/raw/`)
 | Platform | Rows | Source dataset |

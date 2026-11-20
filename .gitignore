@@ -15,9 +15,10 @@ metastore_db/
 # Launcher logs & pids
 logs/
 
-# Data (downloaded/derived; see data/README.md)
-data/raw/
-data/*.csv
+# Data (derived CSVs are committed — 54MB total, see data/README.md)
+data/raw/*.crc
+data/raw/_SUCCESS
+!data/raw/*.csv
 !data/sample_comments.csv
 
 # Model caches
