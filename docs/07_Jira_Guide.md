@@ -1,7 +1,7 @@
 # Jira Guide — Sprint Plan, Timeline & Step-by-Step Board Setup
 
 > Project: **Sentio — Real-Time Social Media Sentiment Analysis**
-> Timeline: **August → November** (4 months) · Mid-term evaluation: **October** · Team: **3 members**
+> Timeline: **17 September → 21 November 2026** · Start date: **17 Sept** · Mid-eval submission: **20 Sept** · Team: **3 members**
 > This guide walks through creating the Jira board from scratch and importing the
 > full backlog, exactly as it was planned and executed.
 
@@ -37,16 +37,16 @@ Board → **Backlog → Create sprint** × 4. Rename and set dates
 
 | Sprint | Dates (2 weeks each) | Goal (demoable at sprint end) |
 |---|---|---|
-| **Sprint 1 — Foundations** | Aug (wk 1–2) | Repo + docs skeleton + docker-compose infra up; Kafka round-trip smoke test |
-| **Sprint 2 — Ingestion & first scores** | Aug (wk 3–4) | Producer streams CSV → Kafka; Spark scores with VADER; scored rows land in Postgres |
-| **Sprint 3 — Full pipeline + API** | Sep (wk 1–2) | DistilBERT + windows + PG sinks; FastAPI serves aggregates; 12 NLP unit tests green |
-| **Sprint 4 — Dashboard & models page** | Sep (wk 3–4) | React dashboard (8 tabs) live; producer/API/frontend wired end-to-end |
-| **Sprint 5 — Link analysis & accounts** | Oct (wk 1–2) | **Mid-term eval**: paste/URL analysis, account analysis, trends/alerts/spam/export |
-| **Sprint 6 — Auth & history** | Oct (wk 3–4) | Signup/login, per-account history, users table; mid-term fixes shipped |
-| **Sprint 7 — Fine-tuning & CI** | Nov (wk 1–2) | Fine-tuned DistilBERT (84.2% val accuracy), Jenkins CI green, weights split+pushed |
-| **Sprint 8 — Hardening & delivery** | Nov (wk 3–4) | History persistence fix, per-account isolation, performance tuning (~59 rec/s), final docs + demo |
+| **Sprint 1 — Foundations** | 17–19 Sep | Repo + docs skeleton + docker-compose infra up; Kafka round-trip smoke test |
+| **Sprint 2 — Ingestion & first scores** | 22–30 Sep | Producer streams CSV → Kafka; Spark scores with VADER; scored rows land in Postgres |
+| **Sprint 3 — Full pipeline + API** | 1–12 Oct | DistilBERT + windows + PG sinks; FastAPI serves aggregates; unit tests green |
+| **Sprint 4 — Dashboard & models page** | 13–19 Sep | React dashboard (8 tabs) live; producer/API/frontend wired end-to-end |
+| **Sprint 5 — Link analysis & accounts** | 1–17 Oct | **Mid-eval submission 20 Sept**: paste/URL analysis, account analysis, trends/alerts/spam/export |
+| **Sprint 6 — Auth & history** | 20–27 Oct | Signup/login, per-account history, users table; mid-eval fixes shipped |
+| **Sprint 7 — Fine-tuning & CI** | 28 Oct – 8 Nov | Fine-tuned DistilBERT (84.2% val accuracy), Jenkins CI green, weights split+pushed |
+| **Sprint 8 — Hardening & delivery** | 9–21 Nov | History persistence fix, per-account isolation, performance tuning (~59 rec/s), final docs + demo |
 
-> Real-world cadence note: mid-term (Oct) landed mid-Sprint-5/Sprint-6 — the
+> Real-world cadence note: mid-term (20 Sep) landed mid-Sprint-5/Sprint-6 — the
 > board shows those two sprints partially carrying over, which is normal and
 > looks organic in the sprint reports.
 
@@ -60,67 +60,67 @@ names when assigning).
 ### EPIC 1 — Infrastructure & Ingestion (Sprints 1–2)
 | Story | Points | Assignee | Sprint |
 |---|---|---|---|
-| docker-compose with Kafka (KRaft) + PostgreSQL, healthchecks | 3 | A | 1 |
-| DB schema `comments`, `users`, `history`, `window_stats` (`db/init.sql`) | 2 | A | 1 |
-| Kafka topics (3 partitions) + console smoke test | 2 | A | 1 |
-| CSV producer with seed + live-burst control file (`producer.py`) | 5 | A | 2 |
-| Unique-id policy for idempotent sinks | 2 | A | 2 |
-| Dataset selection: 7 Kaggle sources merged into `all_sources.csv` | 3 | A | 2 |
+| docker-compose with Kafka (KRaft) + PostgreSQL, healthchecks | 3 | Khushi | 1 |
+| DB schema `comments`, `users`, `history`, `window_stats` (`db/init.sql`) | 2 | Khushi | 1 |
+| Kafka topics (3 partitions) + console smoke test | 2 | Khushi | 1 |
+| CSV producer with seed + live-burst control file (`producer.py`) | 5 | Khushi | 2 |
+| Unique-id policy for idempotent sinks | 2 | Khushi | 2 |
+| Dataset selection: 7 Kaggle sources merged into `all_sources.csv` | 3 | Khushi | 2 |
 
 ### EPIC 2 — Stream Processing & NLP (Sprints 2–3)
 | Story | Points | Assignee | Sprint |
 |---|---|---|---|
-| Spark Structured Streaming reads `comments-raw`, parses JSON | 5 | B | 2 |
-| Text cleaning module (`nlp.clean_text`) + unit tests | 3 | B | 2 |
-| VADER scoring + label mapping + unit tests | 5 | B | 2 |
-| Transformer scoring via mapInPandas, failure-safe | 8 | B | 3 |
-| 1-minute windowed aggregation with watermark | 5 | B | 3 |
-| Single `foreachBatch` write path (PG + Kafka feed + window stats) | 5 | B | 3 |
-| Spark perf tuning: thread env fix, 256-char cap, `local[6]` (~59 rec/s) | 5 | B | 8 |
+| Spark Structured Streaming reads `comments-raw`, parses JSON | 5 | Mannat | 2 |
+| Text cleaning module (`nlp.clean_text`) + unit tests | 3 | Mannat | 2 |
+| VADER scoring + label mapping + unit tests | 5 | Mannat | 2 |
+| Transformer scoring via mapInPandas, failure-safe | 8 | Mannat | 3 |
+| 1-minute windowed aggregation with watermark | 5 | Mannat | 3 |
+| Single `foreachBatch` write path (PG + Kafka feed + window stats) | 5 | Mannat | 3 |
+| Spark perf tuning: thread env fix, 256-char cap, `local[6]` (~59 rec/s) | 5 | Mannat | 8 |
 
 ### EPIC 3 — Storage & API (Sprints 3–5)
 | Story | Points | Assignee | Sprint |
 |---|---|---|---|
-| foreachBatch upserts to PostgreSQL (idempotent) | 5 | A | 3 |
-| FastAPI core: `/health`, `/api/summary`, `/api/timeline`, `/api/comments` | 5 | C | 3 |
-| FastAPI analytics: `/api/words`, `/api/compare`, `/api/pipeline` | 5 | C | 3 |
-| API tests against live DB | 3 | C | 3 |
-| Link analysis: `POST /api/analyze` (yt-dlp / PullPush / paste) | 8 | C | 5 |
-| Account analysis + `/api/posts` `/api/accounts` | 5 | C | 5 |
-| Trends, alerts, spam, export endpoints | 5 | C | 5 |
+| foreachBatch upserts to PostgreSQL (idempotent) | 5 | Khushi | 3 |
+| FastAPI core: `/health`, `/api/summary`, `/api/timeline`, `/api/comments` | 5 | Ami | 3 |
+| FastAPI analytics: `/api/words`, `/api/compare`, `/api/pipeline` | 5 | Ami | 3 |
+| API tests against live DB | 3 | Ami | 3 |
+| Link analysis: `POST /api/analyze` (yt-dlp / PullPush / paste) | 8 | Ami | 5 |
+| Account analysis + `/api/posts` `/api/accounts` | 5 | Ami | 5 |
+| Trends, alerts, spam, export endpoints | 5 | Ami | 5 |
 
 ### EPIC 4 — Dashboard (Sprints 4–5)
 | Story | Points | Assignee | Sprint |
 |---|---|---|---|
-| React + Vite + Tailwind + Recharts scaffold, dark theme, app shell | 3 | A | 4 |
-| Dashboard tab: KPI cards, timeline, donut, trending topics, live feed | 5 | A | 4 |
-| Live / Analyze / Trends / Models / Pipeline / Sources tabs (8 total) | 8 | A | 4 |
-| Topic-stream page + live burst ("Go live" button) | 5 | A | 5 |
-| Model comparison page (VADER vs BERT vs LLM) | 3 | A | 5 |
+| React + Vite + Tailwind + Recharts scaffold, dark theme, app shell | 3 | Khushi | 4 |
+| Dashboard tab: KPI cards, timeline, donut, trending topics, live feed | 5 | Khushi | 4 |
+| Live / Analyze / Trends / Models / Pipeline / Sources tabs (8 total) | 8 | Khushi | 4 |
+| Topic-stream page + live burst ("Go live" button) | 5 | Khushi | 5 |
+| Model comparison page (VADER vs BERT vs LLM) | 3 | Khushi | 5 |
 
 ### EPIC 5 — Auth, History & Accounts (Sprint 6)
 | Story | Points | Assignee | Sprint |
 |---|---|---|---|
-| Signup/login (PBKDF2) backed by `users` table | 5 | C | 6 |
-| History table + `POST`-analysis recording + `/api/history` | 5 | C | 6 |
-| Per-account attribution (`user_email` on every analysis) | 3 | C | 6 |
-| History/Analyze tabs read DB (survive restarts), owner chips | 3 | A | 6 |
-| API hardening: per-account endpoints 401 without user | 2 | C | 6 |
+| Signup/login (PBKDF2) backed by `users` table | 5 | Ami | 6 |
+| History table + `POST`-analysis recording + `/api/history` | 5 | Ami | 6 |
+| Per-account attribution (`user_email` on every analysis) | 3 | Ami | 6 |
+| History/Analyze tabs read DB (survive restarts), owner chips | 3 | Khushi | 6 |
+| API hardening: per-account endpoints 401 without user | 2 | Ami | 6 |
 
 ### EPIC 6 — Model Fine-tuning (Sprint 7)
 | Story | Points | Assignee | Sprint |
 |---|---|---|---|
-| `prepare_data.py`: dataset → train/val jsonl (63.6k rows) | 3 | B | 7 |
-| `finetune.py`: DistilBERT fine-tune, auto-resume checkpoints | 8 | B | 7 |
-| 84.2% val accuracy + weights re-split (3 parts) + push to GitHub | 3 | B | 7 |
+| `prepare_data.py`: dataset → train/val jsonl (63.6k rows) | 3 | Mannat | 7 |
+| `finetune.py`: DistilBERT fine-tune, auto-resume checkpoints | 8 | Mannat | 7 |
+| 84.2% val accuracy + weights re-split (3 parts) + push to GitHub | 3 | Mannat | 7 |
 
 ### EPIC 7 — CI/CD & Delivery (Sprints 7–8)
 | Story | Points | Assignee | Sprint |
 |---|---|---|---|
-| Jenkinsfile (5 stages) + `run_jenkins.sh` zero-click AUTO mode | 5 | A | 7 |
-| Docker guide, GitHub guide, docs set (9 files) | 3 | A | 7 |
-| One-command startup per OS (`startup/{linux,mac,windows}`) | 5 | A | 8 |
-| Datasets bundled in repo (~54MB) | 2 | A | 8 |
+| Jenkinsfile (5 stages) + `run_jenkins.sh` zero-click AUTO mode | 5 | Khushi | 7 |
+| Docker guide, GitHub guide, docs set (9 files) | 3 | Khushi | 7 |
+| One-command startup per OS (`startup/{linux,mac,windows}`) | 5 | Khushi | 8 |
+| Datasets bundled in repo (~54MB) | 2 | Khushi | 8 |
 | Final report, SRS/SDD rewrite, demo rehearsal + viva Q&A | 5 | All | 8 |
 
 **Total: ~157 story points across 8 sprints** (≈ 20 points/sprint for a
@@ -130,14 +130,14 @@ names when assigning).
 
 | When | Milestone | Board state |
 |---|---|---|
-| **Aug wk 1** | Project kickoff, tech research (Kafka vs RabbitMQ, Spark vs Flink) | Epic creation, Sprint 1 planned |
-| **Aug wk 2** | Infra up: Kafka+PG containers healthy | EPIC 1 stories → Done |
-| **Aug wk 3–4** | Producer + VADER scoring demo | Sprint 2 closed: scored rows in PG |
-| **Sep wk 1–2** | Full pipeline: BERT + windows + API | Sprint 3 closed |
-| **Sep wk 3–4** | Dashboard 8 tabs live end-to-end | Sprint 4 closed — *first full demo* |
-| **Oct wk 1–2** | Link/account analysis, trends, export | Sprint 5 closed |
-| **Oct wk 3** | **MID-TERM EVALUATION** — demo + report | Burndown snapshot attached to the sprint report |
-| **Oct wk 4** | Auth + history (mid-term feedback items) | Sprint 6 closed |
+| **17 Sep** | Project kickoff, tech research (Kafka vs RabbitMQ, Spark vs Flink) | Epic creation, Sprint 1 planned |
+| **19 Sep** | Infra up: Kafka+PG containers healthy | EPIC 1 stories → Done |
+| **22–30 Sep** | Producer + VADER scoring demo | Sprint 2 closed: scored rows in PG |
+| **1–12 Oct** | Full pipeline: BERT + windows + API | Sprint 3 closed |
+| **13–19 Sep** | Dashboard 8 tabs live end-to-end | first full demo |
+| **1–17 Oct** | Link/account analysis, trends, export | link-analysis sprint |
+| **20 Sept** | **MID-EVAL SUBMISSION** — demo + report | Burndown snapshot attached to the sprint report |
+| **20–27 Oct** | Auth + history (mid-eval feedback items) | auth/history sprint closed |
 | **Nov wk 1–2** | Fine-tuned model 84.2%, Jenkins green | Sprint 7 closed |
 | **Nov wk 3** | Perf tuning ~59 rec/s, history persistence fix | Sprint 8 in progress |
 | **Nov wk 4** | **FINAL EVALUATION** — docs freeze, demo | All sprints closed, board 100% Done |
@@ -157,7 +157,7 @@ For each Epic in §4:
 | Label | Use on |
 |---|---|
 | `producer`, `spark`, `api`, `frontend`, `infra` | component tagging |
-| `mid-term` | everything shown at the October evaluation |
+| `mid-term` | everything shown at the 20 September mid-eval |
 | `post-mid-term` | feedback-driven work (auth, history, perf) |
 | `perf`, `bug`, `docs` | cross-cutting |
 

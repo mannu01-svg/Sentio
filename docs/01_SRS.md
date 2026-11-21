@@ -6,8 +6,8 @@
 | **Project** | Sentio — Social Media Sentiment Analysis using Kafka, Spark & NLP |
 | **Version** | 2.0 (final) |
 | **Status** | Delivered |
-| **Team** | Member A · Member B · Member C |
-| **Timeline** | August – November (mid-term evaluation: October) |
+| **Team** | Mannat Muthreja · Khushi Balyan · Ami Lal |
+| **Timeline** | 17 September – 21 November 2026 (start: 17 Sept · mid-eval submission: 20 Sept) |
 | **Repository** | github.com/mannu01-svg/Sentio |
 
 ---

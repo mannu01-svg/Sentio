@@ -3,11 +3,13 @@
 
 | | |
 |---|---|
-| **Team** | Member A · Member B · Member C |
+| **Team** | Mannat Muthreja · Khushi Balyan · Ami Lal |
 | **Guide** | *(faculty guide name)* |
 | **Institution** | NIIT University · Department of CSE |
-| **Duration** | August – November (4 months) |
-| **Evaluations** | Mid-term: October · Final: November |
+| **Duration** | 17 September – 21 November 2026 |
+| **Start date** | 17 September 2026 |
+| **Mid-eval submission** | 20 September 2026 |
+| **Final submission** | 26 November 2026 |
 | **Version** | 2.0 (delivered) |
 | **Repository** | github.com/mannu01-svg/Sentio |
 
@@ -107,17 +109,17 @@ Incremental/agile hybrid: 2-week sprints, a demoable increment at every sprint
 boundary, Jira board with epics → stories → sub-tasks (full backlog and
 step-by-step board setup: `07_Jira_Guide.md`).
 
-### 3.2 Timeline (August → November)
+### 3.2 Timeline (17 September → 21 November)
 | Phase | When | Milestone |
 |---|---|---|
-| Foundations | Aug wk 1–2 | repo + docker-compose infra (Kafka+PG) healthy |
-| Ingestion & first scores | Aug wk 3–4 | producer → Kafka → VADER → scored rows in PG |
-| Full pipeline + API | Sep wk 1–2 | DistilBERT + windows + FastAPI serving |
-| Dashboard | Sep wk 3–4 | 8 tabs live — first full end-to-end demo |
-| Link/account analysis | Oct wk 1–2 | analyze by URL/account/keyword/topic, trends/alerts/spam/export |
-| **Mid-term evaluation** | **Oct wk 3** | demo + report |
-| Auth & history | Oct wk 3–4 | signup/login, per-account history |
-| Mid-term fixes | Oct wk 4 | history persistence, attribution, API hardening |
+| Foundations | 17–19 Sep | repo + docker-compose infra (Kafka+PG) healthy |
+| Ingestion & first scores | 22–30 Sep | producer → Kafka → VADER → scored rows in PG |
+| Full pipeline + API | 1–12 Oct | DistilBERT + windows + FastAPI serving |
+| Dashboard | 13–19 Sep | 8 tabs live — first full end-to-end demo |
+| Link/account analysis | 1–17 Oct | analyze by URL/account/keyword/topic, trends/alerts/spam/export |
+| **Mid-eval submission** | **20 Sept** | demo + report |
+| Auth & history | 20–27 Oct | signup/login, per-account history |
+| Mid-eval fixes | 20–27 Oct | history persistence, attribution, API hardening |
 | Fine-tuning + CI | Nov wk 1–2 | **84.2% val accuracy**; Jenkins CI green |
 | Hardening + delivery | Nov wk 3–4 | perf tuning ~59 rec/s, one-command startup, docs freeze |
 | **Final evaluation** | **Nov wk 4** | full demo + viva |
@@ -277,9 +279,9 @@ within ~30–60 s.
 ## 11. Team Contribution
 | Member | Workstream | Key deliverables |
 |---|---|---|
-| Member A | Infra, Producer & Frontend | docker-compose, producer, 8-tab dashboard, startup scripts, Jenkins CI, docs |
-| Member B | Spark, NLP & Model Training | streaming job, NLP module, perf tuning (6.5×), fine-tune (84.2%), evaluation |
-| Member C | API, Auth & History | 30+ endpoints, PBKDF2 auth, per-account history + attribution, test suite |
+| Khushi Balyan | CI/CD, Startup Tooling, Datasets & Docs | Jenkins CI (zero-click), one-command startup per OS, dataset bundling (54 MB), documentation set |
+| Mannat Muthreja | Pipeline, Producer, Frontend & Performance | streaming job, producer, 8-tab dashboard, history/API features, perf tuning (6.5×), fine-tune (84.2%) |
+| Ami Lal | Auth, Link Analysis, Tests & Trends | Sentio rebrand, PBKDF2 signup/login, link/account analysis, trends/alerts/spam/export, 42-case test suite |
 
 Full phase-by-phase plan and RACI: `docs/04_Work_Division.md`.
 

@@ -37,9 +37,9 @@ TITLE = "Sentio — Real-Time Social Media Sentiment Analysis using Kafka, Spark
 MENTOR = "Mr. Manish Hurkat"
 REVIEWER = "Prof. Debopam Acharya"
 TEAM = [
-    ("Member A", "<Enrollment No.>", "B.Tech CSE"),
-    ("Member B", "<Enrollment No.>", "B.Tech CSE"),
-    ("Member C", "<Enrollment No.>", "B.Tech CSE"),
+    ("Khushi Balyan", "<Enrollment No.>", "B.Tech CSE"),
+    ("Mannat Muthreja", "<Enrollment No.>", "B.Tech CSE"),
+    ("Ami Lal", "<Enrollment No.>", "B.Tech CSE"),
 ]
 
 d = Document()
@@ -404,23 +404,23 @@ heading("2. Jira Timeline")
 body(
     "The project followed an incremental/agile process: 2-week sprints, a demoable increment at every "
     "sprint boundary, and a Jira board with epics, stories and sub-tasks (full backlog, points and "
-    "step-by-step board setup in docs/07_Jira_Guide.md). The project commenced in August and concluded "
-    "in November — four months, eight sprints, roughly 157 story points across a three-member team "
+    "step-by-step board setup in docs/07_Jira_Guide.md). The project commenced on 17 September 2026 and concluded "
+    "— 17 September to 21 November 2026, eight sprints, roughly 157 story points across a three-member team "
     "(≈20 points per sprint, a realistic student cadence)."
 )
-subheading("2.1 Sprint plan (August → November)")
-TBL_N, cap = next_table_caption("Project timeline — sprints and milestones (Aug → Nov)")
+subheading("2.1 Sprint plan (17 September → 21 November)")
+TBL_N, cap = next_table_caption("Project timeline — sprints and milestones (17 Sep → 21 Nov)")
 table(
     [
         ["Sprint", "Dates", "Goal (demoable at sprint end)"],
-        ["1 — Foundations", "Aug wk 1–2", "Repo + docs skeleton + docker-compose infra up; Kafka round-trip smoke test"],
-        ["2 — Ingestion & first scores", "Aug wk 3–4", "Producer streams CSV → Kafka; Spark scores with VADER; scored rows land in Postgres"],
-        ["3 — Full pipeline + API", "Sep wk 1–2", "DistilBERT + windows + PG sinks; FastAPI serves aggregates; unit tests green"],
-        ["4 — Dashboard & models page", "Sep wk 3–4", "React dashboard (8 tabs) live; end-to-end wired"],
-        ["5 — Link analysis & accounts", "Oct wk 1–2", "Paste/URL analysis, account analysis, trends/alerts/spam/export"],
-        ["6 — Auth & history", "Oct wk 3–4", "Signup/login, per-account history, users table (mid-term fixes shipped)"],
-        ["7 — Fine-tuning & CI", "Nov wk 1–2", "Fine-tuned DistilBERT (84.2% val accuracy), Jenkins CI green"],
-        ["8 — Hardening & delivery", "Nov wk 3–4", "History persistence, per-account isolation, perf tuning (~59 rec/s), final docs"],
+        ["1 — Foundations", "17–19 Sep", "Repo + docs skeleton + docker-compose infra up; Kafka round-trip smoke test"],
+        ["2 — Ingestion & first scores", "22–30 Sep", "Producer streams CSV → Kafka; Spark scores with VADER; scored rows land in Postgres"],
+        ["3 — Full pipeline + API", "1–12 Oct", "DistilBERT + windows + PG sinks; FastAPI serves aggregates; unit tests green"],
+        ["4 — Dashboard & models page", "13–19 Sep", "React dashboard (8 tabs) live; end-to-end wired"],
+        ["5 — Link analysis & accounts", "1–17 Oct", "Paste/URL analysis, account analysis, trends/alerts/spam/export"],
+        ["6 — Auth & history", "20–27 Oct", "Signup/login, per-account history, users table (mid-eval fixes shipped)"],
+        ["7 — Fine-tuning & CI", "28 Oct – 8 Nov", "Fine-tuned DistilBERT (84.2% val accuracy), Jenkins CI green"],
+        ["8 — Hardening & delivery", "9–21 Nov", "History persistence, per-account isolation, perf tuning (~59 rec/s), final docs"],
     ],
     caption=cap,
     num=TBL_N,
@@ -441,14 +441,14 @@ table(
     caption=cap,
     num=TBL_N,
 )
-subheading("2.3 Mid-term evaluation (October)")
+subheading("2.3 Mid-eval submission (20 September)")
 body(
-    "The mid-term evaluation (October, week 3) demonstrated the working pipeline end-to-end: Kafka → "
+    "The mid-eval submission (20 September 2026) demonstrated the working pipeline end-to-end: Kafka → "
     "Spark → PostgreSQL → FastAPI → dashboard, with link/account analysis, trends, alerts, spam and "
     "export already functional. The demonstration covered the live burst mechanism (dashboard Go-live "
     "button driving the producer), the model comparison panel, and the full 8-tab navigation. "
     "Feedback items — per-account history, authentication, and history persistence across API "
-    "restarts — were prioritised into Sprint 6 and shipped by October’s end. The mid-term snapshot of "
+    "restarts — were prioritised into Sprint 6 and shipped by October’s end. The mid-eval snapshot of "
     "the Jira board (issues labelled mid-term) is retained as evaluation evidence."
 )
 subheading("2.4 Delivery (November)")
@@ -465,9 +465,9 @@ body(
 subheading("2.5 Work division")
 body(
     "Three members, three workstreams (full phase-by-phase plan and RACI matrix in "
-    "docs/04_Work_Division.md): Member A — infrastructure, producer, frontend dashboard, startup "
-    "tooling, CI and documentation; Member B — Spark streaming job, NLP module, performance tuning, "
-    "model fine-tuning, evaluation; Member C — FastAPI platform, authentication, per-account history, "
+    "docs/04_Work_Division.md): Khushi Balyan — CI/CD, startup tooling, datasets, documentation; "
+    "Mannat Muthreja — pipeline, producer, frontend dashboard, performance tuning, fine-tuning; "
+    "Ami Lal — auth, link analysis, trends, 42-case test suite. Pairs worked in parallel after "
     "test suite. Pairs worked in parallel after Sprint 2; every deliverable had a primary and "
     "secondary owner."
 )
@@ -478,7 +478,7 @@ body(
     "The full specification (docs/01_SRS.md, v2.0) contains 40 functional requirements across seven "
     "groups and 8 non-functional requirements. Requirements evolved with the timeline: Sprints 1–2 "
     "fixed the core pipeline (FR-1..13), the first full demo (September) exposed the need for link "
-    "analysis and trends, mid-term feedback drove authentication and per-account history (FR-26..29), "
+    "analysis and trends, mid-eval feedback drove authentication and per-account history (FR-26..29), "
     "and performance work in November tightened NFR-2 to ~59 records/s. The SRS is the final "
     "consolidated specification."
 )
@@ -1496,24 +1496,24 @@ table(
 
 heading("Appendix K — Team Work Division Summary")
 body(
-    "Full detail in docs/04_Work_Division.md (workstreams, Aug→Nov phase plan, RACI matrix). Summary "
+    "Full detail in docs/04_Work_Division.md (workstreams, 17 Sep → 21 Nov phase plan, RACI matrix). Summary "
     "of the three workstreams:"
 )
 TBL_N, cap = next_table_caption("Work division summary")
 table(
     [
         ["Member", "Workstream", "Key deliverables"],
-        ["Member A", "Infra, Producer & Frontend", "docker-compose infra, CSV→Kafka producer with burst control, 8-tab React dashboard, one-command startup per OS, Jenkins CI (zero-click), documentation set"],
-        ["Member B", "Spark, NLP & Model Training", "Spark streaming job (single foreachBatch), unit-tested NLP module, 6.5× performance tuning, DistilBERT fine-tune (84.2%), evaluation"],
-        ["Member C", "API, Auth & History", "30+ FastAPI endpoints, PBKDF2 signup/login, per-account history with attribution, history persistence + auto-migration, 42-case test suite"],
+        ["Khushi Balyan", "CI/CD, Startup Tooling, Datasets & Docs", "Jenkins CI (zero-click, 5/5 green), one-command startup per OS, dataset bundling (54 MB), documentation set"],
+        ["Mannat Muthreja", "Pipeline, Producer, Frontend & Performance", "streaming job (single foreachBatch), CSV→Kafka producer, 8-tab dashboard, history/API features, 6.5× perf tuning, fine-tune (84.2%)"],
+        ["Ami Lal", "Auth, Link Analysis, Tests & Trends", "Sentio rebrand, PBKDF2 signup/login, link/account analysis, trends/alerts/spam/export, 42-case test suite"],
     ],
     caption=cap,
     num=TBL_N,
 )
 body(
-    "All members contributed to mid-term/final demonstrations, requirement reviews, and the "
-    "documentation. The full RACI matrix and the phase-by-phase plan with dates (August → November, "
-    "mid-term October) are maintained in docs/04_Work_Division.md and the Jira board "
+    "All members contributed to the mid-eval/final demonstrations, requirement reviews, and the "
+    "documentation. The full RACI matrix and the phase-by-phase plan with dates (17 September → 21 November, "
+    "mid-eval 20 Sept) are maintained in docs/04_Work_Division.md and the Jira board "
     "(docs/07_Jira_Guide.md)."
 )
 
@@ -1605,7 +1605,7 @@ body(
 
 heading("Appendix N — 10-Minute Demo Script")
 body(
-    "The demonstration order used for the mid-term and final evaluations (run from the one-command "
+    "The demonstration order used for the mid-eval and final evaluations (run from the one-command "
     "setup; the full script with viva Q&A is docs/09_Demo_and_Viva.md):"
 )
 TBL_N, cap = next_table_caption("Demo script (10 minutes)")
