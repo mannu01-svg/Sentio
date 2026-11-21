@@ -1048,37 +1048,49 @@ body(
 
 subheading("11.5 Output figures (screenshots from the running platform)")
 body(
-    "The following figures are captured from the running platform and inserted in the printed copy; "
-    "each is a numbered figure with its caption below (manifest in Appendix H)."
+    "The following figures are captured from the running platform; each is a numbered figure with its "
+    "caption below (manifest in Appendix H)."
 )
 figures_out = [
-    "One-command setup output — every bootstrap step green, services verified",
-    "Dashboard — KPI cards, sentiment timeline, distribution donut, trending topics",
-    "Go-live burst — counters climbing at 40 msg/s, live feed updating",
-    "Live tab — filtered scored feed with sentiment chips and both model scores",
-    "Analyze — YouTube link analysis: fetch progress and staged loader",
-    "Analyze detail — scored comments with sentiment chips for the analyzed post",
-    "History — analyses with owner chips, kind filters, live sentiment bars",
-    "Models — 3-way comparison: agreement, accuracy, LLM corrections of VADER",
-    "Pipeline — Kafka offsets, Spark throughput (~59 rec/s), PostgreSQL rows",
-    "Trends — velocity-ranked hashtags/words with drill-down",
-    "FastAPI /docs — OpenAPI page listing 30+ endpoints",
-    "Jenkins — 5/5 green stages (build auto-triggered by run_jenkins.sh AUTO mode)",
-    "pytest — 42 passed",
-    "evaluation/evaluate.py — accuracy, per-class F1, confusion matrices",
-    "Spark console — streaming micro-batches and sustained throughput",
+    ("01_compose_ps.png", "One-command setup output — docker compose ps, both infra containers healthy"),
+    ("02_setup.png", "startup/<os>/setup.sh output — every bootstrap step green, services verified"),
+    ("05_dashboard.png", "Dashboard — KPI cards (369,891 comments), sentiment split, trending topics, live feed"),
+    ("06_live.png", "Live tab — filtered scored feed with sentiment chips and both model scores"),
+    ("07_analyze.png", "Analyze — platform picker: post/URL analysis, account analysis, keyword search, Threads OAuth"),
+    ("10_history_full.png", "History — analyses with owner chips, kind filters, live sentiment bars (per-account, survives restarts)"),
+    ("11_models.png", "Models — 3-way comparison: agreement, accuracy, LLM corrections of VADER"),
+    ("12_pipeline.png", "Pipeline — Kafka offsets, Spark throughput, PostgreSQL rows (live stage counters)"),
+    ("13_trends.png", "Trends — velocity-ranked hashtags/words with drill-down"),
+    ("10_history.png", "History (full page) — every analysis of the logged-in account, stored in PostgreSQL"),
+    ("15_spark_console.png", "Spark console — streaming micro-batches, local[6] master, 10 s trigger"),
+    ("04_offsets.png", "Kafka end-offsets — comments-raw (ingestion) vs comments-scored (output)"),
+    ("03_topics.png", "Kafka topics — comments-raw and comments-scored, 3 partitions each"),
+    ("13_pytest.png", "pytest — 42 passed (enforced in CI on every push)"),
+    ("14_eval.png", "evaluation/evaluate.py — accuracy, per-class F1, confusion matrices vs dataset labels"),
 ]
-for i, cap_text in enumerate(figures_out, start=1):
-    p = d.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p.paragraph_format.line_spacing = 1.15
-    r = p.add_run(f"\n[ Figure {i} — screenshot ]\n\n")
-    r.font.name = FONT
-    r.font.size = Pt(10)
-    r.font.italic = True
-    r.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
-    cp = para(f"Figure {i}: {cap_text}", size=11, align=WD_ALIGN_PARAGRAPH.CENTER, spacing=1.15)
-    cp.paragraph_format.space_after = Pt(10)
+import os as _os
+SHOTDIR = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "docs", "screenshots")
+SHOTDIR = _os.path.normpath(SHOTDIR)
+for i, (fname, cap_text) in enumerate(figures_out, start=1):
+    img_path = _os.path.join(SHOTDIR, fname)
+    if _os.path.exists(img_path):
+        p = d.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.paragraph_format.line_spacing = 1.15
+        p.add_run().add_picture(img_path, width=Cm(14.5))
+        cp = para(f"Figure {i}: {cap_text}", size=11, align=WD_ALIGN_PARAGRAPH.CENTER, spacing=1.15)
+        cp.paragraph_format.space_after = Pt(10)
+    else:
+        p = d.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.paragraph_format.line_spacing = 1.15
+        r = p.add_run(f"\n[ Figure {i} — screenshot missing: {fname} ]\n\n")
+        r.font.name = FONT
+        r.font.size = Pt(10)
+        r.font.italic = True
+        r.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
+        cp = para(f"Figure {i}: {cap_text}", size=11, align=WD_ALIGN_PARAGRAPH.CENTER, spacing=1.15)
+        cp.paragraph_format.space_after = Pt(10)
 
 # --- 12. Conclusion & Future Scope --------------------------------------------------------
 heading("12. Conclusion & Future Scope")
