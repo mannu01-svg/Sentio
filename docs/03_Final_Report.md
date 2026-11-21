@@ -3,7 +3,7 @@
 
 | | |
 |---|---|
-| **Team** | Mannat Muthreja · Member B · Member C |
+| **Team** | Member A · Member B · Member C |
 | **Guide** | *(faculty guide name)* |
 | **Institution** | NIIT University · Department of CSE |
 | **Duration** | August – November (4 months) |
@@ -277,7 +277,7 @@ within ~30–60 s.
 ## 11. Team Contribution
 | Member | Workstream | Key deliverables |
 |---|---|---|
-| Mannat Muthreja | Infra, Producer & Frontend | docker-compose, producer, 8-tab dashboard, startup scripts, Jenkins CI, docs |
+| Member A | Infra, Producer & Frontend | docker-compose, producer, 8-tab dashboard, startup scripts, Jenkins CI, docs |
 | Member B | Spark, NLP & Model Training | streaming job, NLP module, perf tuning (6.5×), fine-tune (84.2%), evaluation |
 | Member C | API, Auth & History | 30+ endpoints, PBKDF2 auth, per-account history + attribution, test suite |
 

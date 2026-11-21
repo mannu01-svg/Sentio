@@ -54,7 +54,7 @@ Board → **Backlog → Create sprint** × 4. Rename and set dates
 
 Create each Epic first (**Backlog → + → Epic**), then stories inside it
 (drag onto the epic or set the *Epic link* field). Assign points and the
-member (A/B/C = 3 team members; names map in `04_Work_Duevision` → use real
+member (A/B/C = 3 team members; names map in `04_Work_Division.md` → use real
 names when assigning).
 
 ### EPIC 1 — Infrastructure & Ingestion (Sprints 1–2)
