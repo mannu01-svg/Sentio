@@ -433,15 +433,15 @@ Full details in `docs/06_Jenkins_Guide.md`.
 
 | Doc | Content |
 |---|---|
-| `01_SRS.md` | IEEE-style requirements (FR-1..29, NFR-1..8, use cases) |
-| `02_SDD.md` | architecture, DFDs, sequence diagram, DB schema, API contract, error matrix |
-| `03_Final_Report.md` | full report: abstract → results → references |
-| `04_Work_Division.md` | workstreams, phase plan, RACI matrix |
+| `01_SRS.md` | IEEE-style requirements (FR-1..40, NFR-1..8, use cases, acceptance criteria) |
+| `02_SDD.md` | architecture, DFDs, component design, DB schema, sequence diagram, error matrix |
+| `03_Final_Report.md` | SDLC report: abstract → process/timeline → implementation → results (84.2%, ~59 rec/s) |
+| `04_Work_Division.md` | 3-member workstreams, Aug→Nov phase plan, RACI matrix |
 | `05_Docker_Guide.md` | every container/env var explained + troubleshooting |
-| `06_Jenkins_Guide.md` | CI pipeline stages + local Jenkins setup |
-| `07_Jira_Guide.md` | epics/stories, 3-sprint plan, story points |
-| `08_GitHub_Guide.md` | branching, PRs, issues, commit convention |
-| `09_Demo_and_Viva.md` | 10-min demo script + 15 viva Q&As |
+| `06_Jenkins_Guide.md` | CI pipeline stages + zero-click Jenkins (AUTO mode) |
+| `07_Jira_Guide.md` | full board setup, 8-sprint Aug→Nov plan (mid-term Oct), ~157 story points, step-by-step import |
+| `08_GitHub_Guide.md` | branching, PRs, issues, commit convention, large-file policy |
+| `09_Demo_and_Viva.md` | 10-min demo script + 16 viva Q&As |
 
 ---
 
