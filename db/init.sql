@@ -30,11 +30,14 @@ CREATE INDEX IF NOT EXISTS idx_comments_post      ON comments (post_id);
 -- speeds the topic-match ILIKE scan (keyword search / topic streams)
 CREATE INDEX IF NOT EXISTS idx_comments_source_text ON comments (source, lower(left(text, 200)) text_pattern_ops);
 
--- App accounts (signup / login)
+-- App accounts (signup / login) — approval-gated on public deployment:
+-- new signups start `pending` and an admin approves them (role: user/admin)
 CREATE TABLE IF NOT EXISTS users (
     email          TEXT PRIMARY KEY,
     name           TEXT NOT NULL,
     password_hash  TEXT NOT NULL,
+    role           TEXT DEFAULT 'user',
+    status         TEXT DEFAULT 'approved',
     created_at     TIMESTAMP DEFAULT NOW(),
     last_login     TIMESTAMP
 );

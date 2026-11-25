@@ -76,8 +76,9 @@ if not exist "%USERPROFILE%\.cache\huggingface\hub\models--cardiffnlp--twitter-r
   echo       sentiment models already cached
 )
 
-echo [6/7] demo user...
+echo [6/7] login users (demo + admin)...
 ".venv\Scripts\python.exe" scripts\seed_demo_user.py
+".venv\Scripts\python.exe" scripts\seed_admin.py
 
 echo [7/7] starting services (separate windows)...
 if not exist logs mkdir logs

@@ -1,9 +1,157 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useAuth } from "../lib/auth"
 import { useTheme } from "../lib/hooks"
 import { Card, SectionTitle } from "../components/UI"
 import { SentioLogo } from "../components/Brand"
+import {
+  adminApproveUser,
+  adminDeleteUser,
+  adminListUsers,
+  adminRejectUser,
+  adminSetRole,
+} from "../lib/api"
+
+function UserManagement() {
+  const [users, setUsers] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(null)
+  const [error, setError] = useState(null)
+
+  const load = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await adminListUsers()
+      setUsers(res.users || [])
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { load() }, [])
+
+  const act = async (email, fn, label) => {
+    setBusy(email + label)
+    setError(null)
+    try {
+      await fn(email)
+      await load()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const statusChip = (status) => {
+    const map = {
+      approved: "chip-active",
+      pending: "",
+      rejected: "",
+    }
+    return `chip ${map[status] || ""}`
+  }
+
+  return (
+    <Card className="p-5 xl:col-span-2">
+      <SectionTitle title="User management" detail="Approve signups, toggle admins, remove accounts" />
+      <div className="mb-3 flex items-center justify-between">
+        <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>
+          New signups start as <b>pending</b> — approve them before they can sign in.
+        </p>
+        <button className="btn text-xs" onClick={load} disabled={loading}>↻ Refresh</button>
+      </div>
+      {error && <p className="auth-error mb-3">{error}</p>}
+      {loading ? (
+        <p className="text-xs" style={{ color: "var(--text-soft)" }}>Loading accounts…</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr style={{ color: "var(--text-faint)" }}>
+                <th className="px-2 py-2">User</th>
+                <th className="px-2 py-2">Role</th>
+                <th className="px-2 py-2">Status</th>
+                <th className="px-2 py-2">Last login</th>
+                <th className="px-2 py-2 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((u) => (
+                <tr key={u.email} className="border-t" style={{ borderColor: "var(--border-soft)" }}>
+                  <td className="px-2 py-2.5">
+                    <div className="font-bold">{u.name}</div>
+                    <div style={{ color: "var(--text-soft)" }}>{u.email}</div>
+                  </td>
+                  <td className="px-2 py-2.5">
+                    <span className="chip">{u.role === "admin" ? "★ admin" : "user"}</span>
+                  </td>
+                  <td className="px-2 py-2.5">
+                    <span className={statusChip(u.status)}>{u.status}</span>
+                  </td>
+                  <td className="px-2 py-2.5" style={{ color: "var(--text-soft)" }}>
+                    {u.last_login ? new Date(u.last_login).toLocaleString() : "—"}
+                  </td>
+                  <td className="px-2 py-2.5">
+                    <div className="flex flex-wrap justify-end gap-1.5">
+                      {u.status === "pending" && (
+                        <>
+                          <button
+                            className="chip chip-active"
+                            disabled={busy === u.email + "approve"}
+                            onClick={() => act(u.email, adminApproveUser, "approve")}
+                          >
+                            ✓ Approve
+                          </button>
+                          <button
+                            className="chip"
+                            disabled={busy === u.email + "reject"}
+                            onClick={() => act(u.email, adminRejectUser, "reject")}
+                          >
+                            ✕ Reject
+                          </button>
+                        </>
+                      )}
+                      {u.status === "rejected" && (
+                        <button
+                          className="chip chip-active"
+                          disabled={busy === u.email + "approve"}
+                          onClick={() => act(u.email, adminApproveUser, "approve")}
+                        >
+                          ✓ Re-approve
+                        </button>
+                      )}
+                      <button
+                        className="chip"
+                        disabled={busy === u.email + "role"}
+                        onClick={() => act(u.email, (e) => adminSetRole(e, u.role === "admin" ? "user" : "admin"), "role")}
+                      >
+                        {u.role === "admin" ? "Demote" : "Make admin"}
+                      </button>
+                      <button
+                        className="chip"
+                        disabled={busy === u.email + "delete"}
+                        onClick={() => { if (window.confirm(`Delete ${u.email}? This cannot be undone.`)) act(u.email, adminDeleteUser, "delete") }}
+                      >
+                        🗑 Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!users.length && (
+                <tr><td colSpan={5} className="px-2 py-4 text-center" style={{ color: "var(--text-soft)" }}>No accounts yet</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  )
+}
 
 export default function Settings() {
   const { user, logout } = useAuth()
@@ -109,6 +257,8 @@ export default function Settings() {
             </div>
           </div>
         </Card>
+
+        {user?.role === "admin" && <UserManagement />}
       </div>
     </div>
   )

@@ -11,16 +11,28 @@ export function AuthProvider({ children }) {
       return null
     }
   })
+  const [token, setToken] = useState(() => localStorage.getItem("sentio-token"))
 
   useEffect(() => {
     if (user) localStorage.setItem("sentio-user", JSON.stringify(user))
     else localStorage.removeItem("sentio-user")
   }, [user])
 
-  const login = (u) => setUser(u)
-  const logout = () => setUser(null)
+  useEffect(() => {
+    if (token) localStorage.setItem("sentio-token", token)
+    else localStorage.removeItem("sentio-token")
+  }, [token])
 
-  return <AuthContext.Provider value={{ user, login, logout }}>{children}</AuthContext.Provider>
+  const login = (u, t) => {
+    setUser(u)
+    if (t) setToken(t)
+  }
+  const logout = () => {
+    setUser(null)
+    setToken(null)
+  }
+
+  return <AuthContext.Provider value={{ user, token, login, logout }}>{children}</AuthContext.Provider>
 }
 
 export const useAuth = () => useContext(AuthContext)

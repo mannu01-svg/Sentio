@@ -11,7 +11,8 @@ function useAuthForm() {
   const [confirm, setConfirm] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  return { name, setName, email, setEmail, password, setPassword, confirm, setConfirm, loading, setLoading, error, setError }
+  const [pending, setPending] = useState(null)
+  return { name, setName, email, setEmail, password, setPassword, confirm, setConfirm, loading, setLoading, error, setError, pending, setPending }
 }
 
 export function AuthCard({ mode = "login" }) {
@@ -33,8 +34,10 @@ export function AuthCard({ mode = "login" }) {
         ? await signupRequest({ name: f.name, email: f.email, password: f.password })
         : await loginRequest({ email: f.email, password: f.password })
       if (res.status === "ok") {
-        login(res.user)
+        login(res.user, res.token)
         navigate("/dashboard")
+      } else if (res.status === "pending") {
+        f.setPending(res.message || "Account awaiting admin approval")
       } else {
         f.setError(res.message || "Something went wrong")
       }
@@ -45,6 +48,21 @@ export function AuthCard({ mode = "login" }) {
     }
   }
 
+  if (f.pending) {
+    return (
+      <div className="auth-card">
+        <div className="flex justify-center"><SentioLogo size={44} /></div>
+        <h1 className="mt-5 text-center text-xl font-semibold tracking-tight">Request received</h1>
+        <p className="mt-3 text-center text-sm" style={{ color: "var(--text-soft)" }}>{f.pending}</p>
+        <div className="mt-6 flex justify-center">
+          <button className="btn-primary btn justify-center !py-2.5" onClick={() => { f.setPending(null); f.setEmail(""); f.setPassword(""); f.setConfirm("") }}>
+            Back to sign in
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="auth-card">
       <div className="flex justify-center"><SentioLogo size={44} /></div>
@@ -52,7 +70,7 @@ export function AuthCard({ mode = "login" }) {
         {signup ? "Create your account" : "Welcome back"}
       </h1>
       <p className="mt-1.5 text-center text-sm" style={{ color: "var(--text-soft)" }}>
-        {signup ? "Start streaming sentiment in minutes" : "Sign in to your Sentio workspace"}
+        {signup ? "Sign up — an admin approves new accounts" : "Sign in to your Sentio workspace"}
       </p>
 
       <form onSubmit={submit} className="mt-7 space-y-4">

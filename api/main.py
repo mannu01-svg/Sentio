@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 import psycopg2
 import psycopg2.extras
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -97,6 +97,36 @@ def _ensure_history_table():
 _ensure_history_table()
 
 
+def _ensure_users_columns():
+    """Idempotent migration: role/status columns were added for the
+    approval-gated deployment (init.sql only runs on first init). Existing
+    databases get the ALTER at API startup. Never blocks the app."""
+    try:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'user'")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'approved'")
+            # existing accounts (pre-approval rollout) stay approved; new
+            # signups flip status to pending explicitly at insert time
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = 'users_status_check'
+                    ) THEN
+                        ALTER TABLE users ADD CONSTRAINT users_status_check
+                            CHECK (status IN ('pending','approved','rejected'));
+                    END IF;
+                END $$;
+                """
+            )
+    except psycopg2.Error:
+        pass  # auth columns are best-effort at startup — /health reports DB state
+
+
+_ensure_users_columns()
+
+
 # ---------------------------------------------------------------------------
 # Auth: signup + login backed by the users table in PostgreSQL
 # ---------------------------------------------------------------------------
@@ -132,6 +162,59 @@ def _make_token(email: str) -> str:
     return f"sentio_{digest}_{int(float(stamp))}"
 
 
+# ---------------------------------------------------------------------------
+# Token store + auth guards: real server-side session validation
+# ---------------------------------------------------------------------------
+
+TOKENS: dict[str, dict] = {}  # token -> {email, name, role, issued_at}
+TOKEN_TTL = 7 * 24 * 3600  # one week
+
+
+def _issue_token(email: str, name: str, role: str) -> str:
+    token = _make_token(email)
+    TOKENS[token] = {
+        "email": email,
+        "name": name,
+        "role": role,
+        "issued_at": _time.time(),
+    }
+    return token
+
+
+def _auth_token(request: Request) -> dict | None:
+    """Validate the Authorization: Bearer header against the token store."""
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+        session = TOKENS.get(token)
+        if session and _time.time() - session["issued_at"] < TOKEN_TTL:
+            return session
+        if session:  # expired — drop it
+            TOKENS.pop(token, None)
+    return None
+
+
+def _require_session(request: Request, user: str | None) -> dict:
+    """Mutating/account-scoped endpoints require a valid Bearer token AND a
+    matching ?user= (the token's email). Returns the session."""
+    session = _auth_token(request)
+    if not session:
+        raise HTTPException(status_code=401, detail="login required — sign in to continue")
+    if user and user.strip().lower() != session["email"]:
+        raise HTTPException(status_code=403, detail="token does not match this account")
+    return session
+
+
+def _require_admin(request: Request) -> dict:
+    """Admin endpoints require a valid token from an approved admin."""
+    session = _auth_token(request)
+    if not session:
+        raise HTTPException(status_code=401, detail="login required")
+    if session.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="admin access required")
+    return session
+
+
 class SignupRequest(BaseModel):
     name: str
     email: str
@@ -155,7 +238,10 @@ def _validate(email: str, password: str, name: str | None = None) -> str | None:
 
 @app.post("/api/signup")
 def signup(req: SignupRequest):
-    """Create an account (name + email + password) in the users table."""
+    """Create an account — it starts as `pending` until an admin approves it.
+
+    Public deployment flow: signup -> pending -> admin approves (Settings ->
+    User Management) -> the user can sign in."""
     email = req.email.strip().lower()
     name = req.name.strip()
     error = _validate(email, req.password, name)
@@ -165,28 +251,34 @@ def signup(req: SignupRequest):
         with db() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO users (email, name, password_hash)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (email) DO UPDATE
-                SET name = EXCLUDED.name, password_hash = EXCLUDED.password_hash
+                INSERT INTO users (email, name, password_hash, role, status)
+                VALUES (%s, %s, %s, 'user', 'pending')
+                ON CONFLICT (email) DO NOTHING
                 RETURNING email, name
                 """,
                 (email, name, _hash_password(req.password)),
             )
             row = cur.fetchone()
+            if not row:
+                cur.execute("SELECT status FROM users WHERE email = %s", (email,))
+                existing = cur.fetchone()
+                state = existing["status"] if existing else None
+                if state == "pending":
+                    return {"status": "pending",
+                            "message": "This email already has a pending request — an admin will approve it soon"}
+                return {"status": "error", "message": "An account with this email already exists"}
     except psycopg2.Error as exc:
         return {"status": "error", "message": f"Could not create account: {exc}"}
     return {
-        "status": "ok",
-        "token": _make_token(email),
-        "user": {"email": row["email"], "name": row["name"]},
-        "note": "Account created and signed in",
+        "status": "pending",
+        "user": {"email": email, "name": name},
+        "message": "Request received — you can sign in once an admin approves your account",
     }
 
 
 @app.post("/api/login")
 def login(req: LoginRequest):
-    """Verify credentials against the users table."""
+    """Verify credentials against the users table — only approved accounts get a token."""
     email = req.email.strip().lower()
     error = _validate(email, req.password)
     if error and "email" not in error:
@@ -196,22 +288,146 @@ def login(req: LoginRequest):
     try:
         with db() as conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT email, name, password_hash FROM users WHERE email = %s",
+                "SELECT email, name, password_hash, role, status FROM users WHERE email = %s",
                 (email,),
             )
             row = cur.fetchone()
             if not row or not _verify_password(req.password, row["password_hash"]):
                 return {"status": "error", "message": "Invalid email or password"}
+            status = row["status"] or "approved"
+            if status == "pending":
+                return {"status": "pending",
+                        "message": "Your account is awaiting admin approval — try again later"}
+            if status == "rejected":
+                return {"status": "error", "message": "Your account request was rejected — contact an admin"}
             cur.execute(
                 "UPDATE users SET last_login = NOW() WHERE email = %s", (email,)
             )
     except psycopg2.Error as exc:
         return {"status": "error", "message": f"Login failed: {exc}"}
+    role = row["role"] or "user"
+    token = _issue_token(row["email"], row["name"], role)
     return {
         "status": "ok",
-        "token": _make_token(email),
-        "user": {"email": row["email"], "name": row["name"]},
+        "token": token,
+        "role": role,
+        "user": {"email": row["email"], "name": row["name"], "role": role},
     }
+
+
+# ---------------------------------------------------------------------------
+# Admin: user management (approve / reject / delete / role) — seeded admin only
+# ---------------------------------------------------------------------------
+
+def _user_row(cur, email: str) -> dict | None:
+    cur.execute(
+        "SELECT email, name, role, status, created_at, last_login FROM users WHERE email = %s",
+        (email,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        **row,
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "last_login": row["last_login"].isoformat() if row["last_login"] else None,
+    }
+
+
+@app.get("/api/admin/users")
+def admin_list_users(request: Request):
+    """All accounts (email, name, role, status, timestamps) — admin only."""
+    _require_admin(request)
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT email, name, role, status, created_at, last_login
+            FROM users ORDER BY created_at DESC
+            """
+        )
+        rows = []
+        for row in cur.fetchall():
+            rows.append({
+                **row,
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                "last_login": row["last_login"].isoformat() if row["last_login"] else None,
+            })
+    return {"users": rows, "count": len(rows)}
+
+
+class AdminActionRequest(BaseModel):
+    email: str
+    role: str | None = None  # for the role toggle: user | admin
+
+
+@app.post("/api/admin/users/approve")
+def admin_approve(req: AdminActionRequest, request: Request):
+    """Approve a pending account — the user can now sign in."""
+    _require_admin(request)
+    email = req.email.strip().lower()
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET status = 'approved' WHERE email = %s RETURNING email, name",
+            (email,),
+        )
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"No account {email}")
+    return {"status": "ok", "email": row["email"], "name": row["name"], "account_status": "approved"}
+
+
+@app.post("/api/admin/users/reject")
+def admin_reject(req: AdminActionRequest, request: Request):
+    """Reject a pending account — sign-in stays blocked."""
+    _require_admin(request)
+    email = req.email.strip().lower()
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET status = 'rejected' WHERE email = %s RETURNING email, name",
+            (email,),
+        )
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"No account {email}")
+    return {"status": "ok", "email": row["email"], "name": row["name"], "account_status": "rejected"}
+
+
+@app.post("/api/admin/users/role")
+def admin_set_role(req: AdminActionRequest, request: Request):
+    """Toggle a user's role between user and admin."""
+    session = _require_admin(request)
+    email = req.email.strip().lower()
+    role = (req.role or "").strip().lower()
+    if role not in ("user", "admin"):
+        return {"status": "error", "message": "role must be 'user' or 'admin'"}
+    if email == session["email"] and role == "user":
+        # keep at least one admin — the seeded admin cannot demote themselves
+        with db() as conn, conn.cursor() as cur:
+            cur.execute("SELECT count(*) AS admins FROM users WHERE role = 'admin'")
+            admins = cur.fetchone()["admins"]
+        if admins <= 1:
+            return {"status": "error", "message": "Cannot demote the last admin"}
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE users SET role = %s WHERE email = %s RETURNING email, name", (role, email))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"No account {email}")
+    return {"status": "ok", "email": row["email"], "name": row["name"], "role": role}
+
+
+@app.post("/api/admin/users/delete")
+def admin_delete(req: AdminActionRequest, request: Request):
+    """Delete an account entirely (also unblocks the email for re-signup)."""
+    session = _require_admin(request)
+    email = req.email.strip().lower()
+    if email == session["email"]:
+        return {"status": "error", "message": "Cannot delete your own admin account while signed in"}
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM users WHERE email = %s RETURNING email, name", (email,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"No account {email}")
+    return {"status": "ok", "email": row["email"], "name": row["name"], "deleted": True}
 
 
 # ---------------------------------------------------------------------------
@@ -319,12 +535,13 @@ class LiveStreamRequest(BaseModel):
 
 
 @app.post("/api/stream/live")
-def stream_live(req: LiveStreamRequest):
+def stream_live(req: LiveStreamRequest, request: Request):
     """Tell the producer to start streaming a high-rate live burst.
 
     The producer process watches logs/live-stream.json; we write
     {"until": <epoch>, "rate": N} and it streams until that timestamp.
-    """
+    Requires an approved signed-in user (public deployment)."""
+    _require_session(request, None)
     minutes = min(max(req.minutes, 0.5), 30.0)
     rate = min(max(req.rate, 5), 120)
     until = _time.time() + minutes * 60
@@ -344,8 +561,9 @@ def stream_live(req: LiveStreamRequest):
 
 
 @app.post("/api/stream/stop")
-def stream_stop():
+def stream_stop(request: Request):
     """End the live burst immediately (producer goes back to idle)."""
+    _require_session(request, None)
     with open(CONTROL_PATH, "w") as handle:
         json.dump({"until": _time.time(), "rate": 0}, handle)
     return {"status": "ok", "live": False, "note": "Live burst stopped — producer is idle"}
@@ -616,17 +834,6 @@ def _record_history(kind: str, *, post_id: str | None = None, title: str | None 
         pass  # history is best-effort — never block the analysis
 
 
-def _require_user(user: str | None) -> str:
-    """Per-account endpoints are account-scoped: a missing user is a 401
-    (the frontend always sends it once logged in — guests are redirected
-    to /login by the Protected route wrapper)."""
-    if not user or not user.strip():
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=401, detail="login required — pass ?user=<email>")
-    return user.strip().lower()
-
-
 @app.get("/api/history")
 def history(kind: str | None = Query(None, description="post | account | topic | keyword"),
             platform: str | None = None,
@@ -688,8 +895,12 @@ def history(kind: str | None = Query(None, description="post | account | topic |
 
 
 @app.post("/api/analyze")
-def analyze(req: AnalyzeRequest):
-    """Fetch comments for a post URL (or pasted text) and push them into the pipeline."""
+def analyze(req: AnalyzeRequest, request: Request):
+    """Fetch comments for a post URL (or pasted text) and push them into the pipeline.
+
+    Requires an approved signed-in user: Authorization: Bearer <token> whose
+    email matches the ?user= / user_email attribution."""
+    _require_session(request, req.user_email)
     import fetchers
     import publisher
 
@@ -814,8 +1025,11 @@ ACCOUNTS = {}  # account_key -> {platform, handle, posts: [post_id...], analyzed
 
 
 @app.post("/api/analyze-account")
-def analyze_account(req: AnalyzeAccountRequest):
-    """Fetch every comment across an account's recent posts and push them into the pipeline."""
+def analyze_account(req: AnalyzeAccountRequest, request: Request):
+    """Fetch every comment across an account's recent posts and push them into the pipeline.
+
+    Requires an approved signed-in user (Bearer token matching user_email)."""
+    _require_session(request, req.user_email)
     import fetchers
     import publisher
 
@@ -1153,13 +1367,16 @@ TOPIC_STREAMS = {}  # topic_key -> {source, topic, posts: [...], started_at}
 
 
 @app.post("/api/topics/stream")
-def topics_stream(req: TopicStreamRequest):
+def topics_stream(req: TopicStreamRequest, request: Request):
     """Click a trending topic -> fetch a fresh batch of real comments about it -> Kafka.
 
     youtube: yt-dlp flat search (fast, keyless) -> comments of the top videos
     reddit / x: pick fresh posts about the topic from the dataset replay pool
                 (their public APIs are bot-walled / paid), publish matching comments
+
+    Requires an approved signed-in user (Bearer token matching user_email).
     """
+    _require_session(request, req.user_email)
     import fetchers
     import publisher
 

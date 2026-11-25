@@ -98,10 +98,11 @@ else
   echo "  ✓ sentiment LLMs already cached"
 fi
 
-# 6. demo login user (ada@sentio.app / secret123) -----------------------------
-#    Cross-platform seed script (same one the Windows start.bat uses).
+# 6. login users (demo user + seeded admin) -----------------------------------
+#    Cross-platform seed scripts (same ones the Windows start.bat uses).
 #    Skips gracefully when Postgres isn't up yet — start.sh re-invokes this
-#    script after containers are healthy, which completes the seed.
+#    script after containers are healthy, which completes the seeds.
 "$ROOT/.venv/bin/python" "$ROOT/scripts/seed_demo_user.py"
+"$ROOT/.venv/bin/python" "$ROOT/scripts/seed_admin.py"
 
 echo "  ✓ bootstrap complete"

@@ -1,5 +1,15 @@
 const BASE = ""
 
+// the logged-in user's session token (set by AuthProvider in localStorage) —
+// sent as Authorization: Bearer on every mutating/account-scoped call
+export function currentToken() {
+  try {
+    return localStorage.getItem("sentio-token") || null
+  } catch {
+    return null
+  }
+}
+
 // the logged-in user (set by AuthProvider in localStorage) — attached to every
 // analyze call so history is attributed to the account that ran it
 export function currentUserEmail() {
@@ -11,8 +21,13 @@ export function currentUserEmail() {
   }
 }
 
+function authHeaders() {
+  const token = currentToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 async function get(path) {
-  const res = await fetch(`${BASE}${path}`)
+  const res = await fetch(`${BASE}${path}`, { headers: authHeaders() })
   if (!res.ok) throw new Error(`${path}: ${res.status}`)
   return res.json()
 }
@@ -20,7 +35,7 @@ async function get(path) {
 async function post(path, body) {
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(`${path}: ${res.status}`)
@@ -96,6 +111,17 @@ export const loginRequest = ({ email, password }) =>
   post("/api/login", { email, password })
 export const signupRequest = ({ name, email, password }) =>
   post("/api/signup", { name, email, password })
+
+// ---- admin: user management (Settings -> User Management, admin only) ----
+export const adminListUsers = () => get("/api/admin/users")
+export const adminApproveUser = (email) =>
+  post("/api/admin/users/approve", { email })
+export const adminRejectUser = (email) =>
+  post("/api/admin/users/reject", { email })
+export const adminSetRole = (email, role) =>
+  post("/api/admin/users/role", { email, role })
+export const adminDeleteUser = (email) =>
+  post("/api/admin/users/delete", { email })
 
 export function exportUrl(filters = {}) {
   const params = new URLSearchParams()

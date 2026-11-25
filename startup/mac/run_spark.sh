@@ -22,7 +22,24 @@ export PYSPARK_DRIVER_PYTHON="$ROOT/.venv/bin/python"
 # inference, ~200s/batch). Export a custom var that survives and read it in
 # nlp.warm() via torch.set_num_threads AFTER load (set_num_interop after init
 # deadlocks forked workers, so only intraop is set).
-export NLP_TORCH_THREADS="${NLP_TORCH_THREADS:-8}"
+#
+# auto-detect machine profile → Spark sizing. Any SPARK_MASTER /
+# SPARK_DRIVER_MEMORY / NLP_TORCH_THREADS already set in the environment
+# wins, so manual tuning still works.
+CORES="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
+RAM_GB="$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1073741824}')"
+RAM_GB="${RAM_GB:-0}"
+if [ "$RAM_GB" -ge 24 ] && [ "$CORES" -ge 8 ]; then
+  PROFILE="high";  _MASTER="local[6]"; _MEM=4g; _THREADS=8
+elif [ "$RAM_GB" -ge 8 ]; then
+  PROFILE="mid";   _MASTER="local[4]"; _MEM=2g; _THREADS=4
+else
+  PROFILE="low";   _MASTER="local[2]"; _MEM=1g; _THREADS=2
+fi
+export SPARK_MASTER="${SPARK_MASTER:-$_MASTER}"
+export SPARK_DRIVER_MEMORY="${SPARK_DRIVER_MEMORY:-$_MEM}"
+export NLP_TORCH_THREADS="${NLP_TORCH_THREADS:-$_THREADS}"
+echo "▶ machine profile: ${PROFILE} (${CORES} cores, ${RAM_GB} GB RAM) → master=$SPARK_MASTER driver=$SPARK_DRIVER_MEMORY torch-threads=$NLP_TORCH_THREADS"
 
 export PYTHONUNBUFFERED=1
 export PYTHONFAULTHANDLER=1

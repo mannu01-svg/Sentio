@@ -33,6 +33,11 @@ models/training/checkpoints/
 frontend/node_modules/
 frontend/dist/
 
+# Deploy: TLS private key stays local (public cert is committed so a fresh
+# clone serves HTTPS immediately; gen-certs.sh regenerates on demand)
+deploy/nginx/certs/privkey.pem
+deploy/certbot/
+
 # Env & tools
 .env
 .env.local
