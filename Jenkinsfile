@@ -1,21 +1,17 @@
-// Jenkins CI pipeline for the Social Media Sentiment Analysis project.
-// Stages: setup -> lint -> tests -> frontend build -> (optional) docker build.
-//
-// Runs on any Jenkins agent with: python3, node, docker.
-// No credentials required — the pipeline only builds and tests.
 
 pipeline {
     agent any
 
     environment {
         VENV = ".venv-ci"
-        // keep pip quiet and cacheable
         PIP_DISABLE_PIP_VERSION_CHECK = "1"
+        PIP_CACHE_DIR = "/var/jenkins_home/.cache/pip"
+        PIP_DEFAULT_TIMEOUT = "60"
     }
 
     options {
         timestamps()
-        timeout(time: 30, unit: "MINUTES")
+        timeout(time: 60, unit: "MINUTES")
         buildDiscarder(logRotator(numToKeepStr: "20"))
     }
 
@@ -23,8 +19,28 @@ pipeline {
         stage("Setup Python") {
             steps {
                 sh """
-                    python3 -m venv ${VENV}
-                    ./${VENV}/bin/pip install -q kafka-python-ng vaderSentiment fastapi 'uvicorn[standard]' psycopg2-binary pandas httpx pytest pyarrow transformers torch --index-url https://pypi.org/simple
+                    if [ ! -d "${VENV}" ]; then
+                        python3 -m venv ${VENV}
+                    fi
+
+                    mkdir -p "${PIP_CACHE_DIR}"
+
+                    ./${VENV}/bin/pip install \
+                        --retries 10 \
+                        --timeout 60 \
+                        --prefer-binary \
+                        kafka-python-ng \
+                        vaderSentiment \
+                        fastapi \
+                        'uvicorn[standard]' \
+                        psycopg2-binary \
+                        pandas \
+                        httpx \
+                        pytest \
+                        pyarrow \
+                        transformers \
+                        torch \
+                        --index-url https://pypi.org/simple
                 """
             }
         }
@@ -65,7 +81,7 @@ pipeline {
 
     post {
         always {
-            echo "Pipeline finished — status: ${currentBuild.currentResult}"
+            echo "Pipeline finished - status: ${currentBuild.currentResult}"
         }
         success {
             echo "All stages passed."
