@@ -19,8 +19,9 @@ pipeline {
         STACK_NETWORK = "sentio_default"   // compose project "sentio"
         API_URL = "http://api:8000"
         UI_URL = "http://frontend"
-        // keep pip quiet and cacheable
         PIP_DISABLE_PIP_VERSION_CHECK = "1"
+        PIP_CACHE_DIR = "/var/jenkins_home/.cache/pip"
+        PIP_DEFAULT_TIMEOUT = "60"
     }
 
     parameters {
@@ -35,7 +36,7 @@ pipeline {
 
     options {
         timestamps()
-        timeout(time: 30, unit: "MINUTES")
+        timeout(time: 60, unit: "MINUTES")
         buildDiscarder(logRotator(numToKeepStr: "20"))
     }
 
@@ -43,8 +44,35 @@ pipeline {
         stage("Setup Python") {
             steps {
                 sh """
-                    python3 -m venv ${VENV}
-                    ./${VENV}/bin/pip install -q kafka-python-ng vaderSentiment fastapi 'uvicorn[standard]' psycopg2-binary pandas httpx pytest pyarrow transformers torch 'pymongo==4.10.1' 'mongomock==4.3.0' setuptools selenium==4.38.0 --index-url https://pypi.org/simple
+                    if [ ! -d "${VENV}" ]; then
+                        python3 -m venv ${VENV}
+                    fi
+
+                    mkdir -p "${PIP_CACHE_DIR}"
+
+                    # CPU-only PyTorch (~200 MB) instead of the default CUDA build (~2.5 GB)
+                    ./${VENV}/bin/pip install --retries 10 --timeout 60 --prefer-binary \
+                        torch --index-url https://download.pytorch.org/whl/cpu
+
+                    ./${VENV}/bin/pip install \
+                        --retries 10 \
+                        --timeout 60 \
+                        --prefer-binary \
+                        kafka-python-ng \
+                        vaderSentiment \
+                        fastapi \
+                        'uvicorn[standard]' \
+                        psycopg2-binary \
+                        pandas \
+                        httpx \
+                        pytest \
+                        pyarrow \
+                        transformers \
+                        'pymongo==4.10.1' \
+                        'mongomock==4.3.0' \
+                        setuptools \
+                        selenium==4.38.0 \
+                        --index-url https://pypi.org/simple
                 """
             }
         }
@@ -133,7 +161,7 @@ pipeline {
         always {
             junit allowEmptyResults: true, testResults: "reports/*.xml"
             archiveArtifacts allowEmptyArchive: true, artifacts: "reports/**"
-            echo "Pipeline finished — status: ${currentBuild.currentResult}"
+            echo "Pipeline finished - status: ${currentBuild.currentResult}"
         }
         success {
             echo "All stages passed."
