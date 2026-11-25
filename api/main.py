@@ -835,14 +835,17 @@ def _record_history(kind: str, *, post_id: str | None = None, title: str | None 
 
 
 @app.get("/api/history")
-def history(kind: str | None = Query(None, description="post | account | topic | keyword"),
+def history(request: Request,
+            kind: str | None = Query(None, description="post | account | topic | keyword"),
             platform: str | None = None,
             user: str | None = Query(None, description="filter by the account that ran the analysis"),
             limit: int = Query(100, ge=1, le=500)):
     """Every analysis ever run, newest first — links, accounts, keywords, topics, pastes.
 
-    Pass ?user=<email> to see only the analyses run by that account."""
-    user = _require_user(user)
+    Pass ?user=<email> to see only the analyses run by that account.
+    Requires a valid Bearer token whose email matches ?user=."""
+    session = _require_session(request, user)
+    user = session["email"]
     clauses, params = ["1=1"], []
     if kind:
         clauses.append("kind = %s")
@@ -969,11 +972,14 @@ def _sentiment_payload(row: dict) -> dict:
 
 
 @app.get("/api/posts")
-def posts(user: str | None = Query(None, description="filter by the account that ran the analysis")):
+def posts(request: Request,
+          user: str | None = Query(None, description="filter by the account that ran the analysis")):
     """Analyzed posts (URL/paste ingests) with their live sentiment summary.
 
-    Reads from the history table (not memory) so analyses survive API restarts."""
-    user = _require_user(user)
+    Reads from the history table (not memory) so analyses survive API restarts.
+    Requires a valid Bearer token whose email matches ?user=."""
+    session = _require_session(request, user)
+    user = session["email"]
     clauses, params = ["kind IN ('post', 'keyword')", "user_email = %s"], [user]
     out = []
     with db() as conn, conn.cursor() as cur:
@@ -1088,11 +1094,14 @@ def analyze_account(req: AnalyzeAccountRequest, request: Request):
 
 
 @app.get("/api/accounts")
-def accounts(user: str | None = Query(None, description="filter by the account that ran the analysis")):
+def accounts(request: Request,
+             user: str | None = Query(None, description="filter by the account that ran the analysis")):
     """Recently analyzed accounts with aggregate sentiment across all their posts.
 
-    Reads from the history table (not memory) so analyses survive API restarts."""
-    user = _require_user(user)
+    Reads from the history table (not memory) so analyses survive API restarts.
+    Requires a valid Bearer token whose email matches ?user=."""
+    session = _require_session(request, user)
+    user = session["email"]
     clauses, params = ["kind = 'account'", "user_email = %s"], [user]
     out = []
     with db() as conn, conn.cursor() as cur:
@@ -1508,11 +1517,14 @@ def topics_stream(req: TopicStreamRequest, request: Request):
 
 
 @app.get("/api/topics/streams")
-def topics_streams(user: str | None = Query(None, description="filter by the account that ran the analysis")):
+def topics_streams(request: Request,
+                   user: str | None = Query(None, description="filter by the account that ran the analysis")):
     """Recently started topic streams with their live sentiment.
 
-    Reads from the history table (not memory) so analyses survive API restarts."""
-    user = _require_user(user)
+    Reads from the history table (not memory) so analyses survive API restarts.
+    Requires a valid Bearer token whose email matches ?user=."""
+    session = _require_session(request, user)
+    user = session["email"]
     clauses, params = ["kind = 'topic'", "user_email = %s"], [user]
     out = []
     with db() as conn, conn.cursor() as cur:

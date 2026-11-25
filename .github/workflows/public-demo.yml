@@ -75,10 +75,11 @@ jobs:
           npm ci --cache .npm --prefer-offline
           npm run build
 
-      # ---- infra: kafka + postgres --------------------------------------------
+      # ---- infra: kafka + postgres (prod compose — same project as nginx,
+      #      so the nginx step can join without container/port conflicts) -----
       - name: Start kafka + postgres
         run: |
-          docker compose up -d
+          docker compose -f deploy/docker-compose.prod.yml up -d kafka postgres
           for i in $(seq 1 90); do
             K=$(docker inspect -f '{{.State.Health.Status}}' sma-kafka 2>/dev/null || echo none)
             P=$(docker inspect -f '{{.State.Health.Status}}' sma-postgres 2>/dev/null || echo none)
@@ -121,6 +122,7 @@ jobs:
           done
           curl -s http://localhost:8000/health
           bash deploy/gen-certs.sh
+          # nginx joins the same compose project (kafka/postgres already up)
           docker compose -f deploy/docker-compose.prod.yml up -d --build nginx
           sleep 3
           curl -sk -o /dev/null -w "nginx https: %{http_code}\n" https://localhost/

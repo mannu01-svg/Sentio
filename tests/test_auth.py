@@ -164,3 +164,22 @@ def test_delete_flow_allows_resignup():
     )
     assert res.json()["status"] == "pending"
     _cleanup()
+
+
+@requires_db
+def test_account_scoped_gets_require_token():
+    """Regression: /api/history|posts|accounts|topics/streams must return
+    200 with a Bearer token and 401 without (NameError regression guard)."""
+    token = _seed_admin()  # previous test's cleanup deleted the admin row
+    email = TEST_ADMIN_EMAIL
+    for path in ("/api/history", "/api/posts", "/api/accounts", "/api/topics/streams"):
+        res = client.get(path, params={"user": email})
+        assert res.status_code == 401, path
+        res = client.get(path, params={"user": email}, headers={"Authorization": f"Bearer {token}"})
+        assert res.status_code == 200, path
+    # token/email mismatch is a 403
+    res = client.get(
+        "/api/history", params={"user": "someone-else@sentio.app"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert res.status_code == 403
