@@ -1,0 +1,5 @@
+# Extra packages for the end-to-end UI tests (tests/e2e).
+# pip install -r requirements-test.txt
+selenium==4.38.0
+chromedriver-py      # ChromeDriver that matches your installed Chrome; pin it to your Chrome's major version if needed
+pytest

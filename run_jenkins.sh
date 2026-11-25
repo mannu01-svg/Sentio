@@ -136,6 +136,15 @@ cat > /tmp/sentio_ci_config.xml <<XMLEOF
     <scriptPath>Jenkinsfile</scriptPath>
     <lightweight>true</lightweight>
   </definition>
+  <properties>
+    <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+      <triggers>
+        <com.cloudbees.jenkins.GitHubPushTrigger plugin="github">
+          <spec></spec>
+        </com.cloudbees.jenkins.GitHubPushTrigger>
+      </triggers>
+    </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+  </properties>
   <triggers/>
   <disabled>false</disabled>
 </flow-definition>

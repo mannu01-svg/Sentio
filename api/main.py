@@ -1241,7 +1241,7 @@ def analyze(req: AnalyzeRequest, request: Request):
     sent = publisher.publish_comments(result["comments"])
     ANALYZED.add(result["post_id"], {
         "post_id": result["post_id"],
-        "post_title": result["post_title"],
+        "post_title": (req.title or result["post_title"]) if req.mode == "paste" else result["post_title"],
         "source": result["source"],
         "requested_url": req.url if req.mode != "paste" else None,
         "comments_fetched": len(result["comments"]),
@@ -1250,7 +1250,7 @@ def analyze(req: AnalyzeRequest, request: Request):
     _record_history(
         "post" if req.mode != "paste" else "keyword",
         post_id=result["post_id"],
-        title=result["post_title"] or req.title,
+        title=(req.title or result["post_title"]) if req.mode == "paste" else (result["post_title"] or req.title),
         platform=result["source"],
         keyword=req.title if req.mode == "paste" else None,
         posts=[result["post_id"]],
@@ -1261,7 +1261,7 @@ def analyze(req: AnalyzeRequest, request: Request):
     return {
         "status": "ok",
         "post_id": result["post_id"],
-        "post_title": result["post_title"],
+        "post_title": (req.title or result["post_title"]) if req.mode == "paste" else result["post_title"],
         "source": result["source"],
         "comments_fetched": len(result["comments"]),
         "comments_published": sent,

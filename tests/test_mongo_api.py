@@ -120,3 +120,17 @@ def test_pipeline_and_health_report_mongodb(env):
     # the names the Pipeline page looks up are unchanged
     assert {"Kafka · comments-raw", "Kafka · comments-scored", "PostgreSQL · comments"} <= set(stages)
     assert client.get("/health").json()["mongodb"] == "up"
+
+
+def test_paste_keeps_the_user_title(env, monkeypatch):
+    real_parse = fetchers.parse_pasted
+    monkeypatch.setattr(fetchers, "fetch", lambda url, mode="auto", limit=100: real_parse(url))
+    res = client.post("/api/analyze", headers=env["headers"],
+                      json={"url": "Love it\nHate it", "mode": "paste", "limit": 2,
+                            "title": "Launch-day Instagram post", "user_email": "admin@sentio.app"}).json()
+    assert res["status"] == "ok"
+    assert res["post_title"] == "Launch-day Instagram post"
+    hist = client.get("/api/history", headers=env["headers"], params={"user": "admin@sentio.app"}).json()
+    entries = hist.get("entries") or hist.get("history") or hist
+    mine = next(e for e in entries if e["post_id"] == res["post_id"])
+    assert mine["title"] == "Launch-day Instagram post"

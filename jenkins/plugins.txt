@@ -6,6 +6,8 @@
 #   - git SCM for "Pipeline script from SCM"
 #   - docker-workflow for docker compose config checks
 #   - credentials + cloudbees-folder required by pipeline
+#   - github: GitHub push webhook trigger (githubPush in the Jenkinsfile)
+#   - junit: test reports for unit, Newman and Selenium results
 workflow-aggregator
 workflow-job
 workflow-cps
@@ -17,3 +19,5 @@ docker-workflow
 pipeline-stage-view
 timestamper
 blueocean
+github
+junit

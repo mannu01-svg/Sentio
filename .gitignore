@@ -46,3 +46,7 @@ deploy/certbot/
 # Misc
 *.log
 .DS_Store
+
+# test outputs
+tests/e2e/screenshots/
+reports/

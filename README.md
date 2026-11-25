@@ -440,7 +440,7 @@ AUTO=1 ./run_jenkins.sh   # zero-click: admin sentio/sentio123 + sentio-ci job +
 `startup/*/setup.sh` (and `setup.bat`) already runs Jenkins in AUTO mode —
 the flow above is for when you want Jenkins on its own. Five stages:
 Setup Python → Lint → Unit Tests → Frontend Build → Compose Config.
-Full details in `docs/06_Jenkins_Guide.md`.
+Full details in `docs/06_Jenkins_Guide.md`. Selenium, Postman and the GitHub webhook: `docs/08_Testing_Guide.md`.
 
 `docs/` contains the full academic/documentation set:
 
@@ -452,7 +452,8 @@ Full details in `docs/06_Jenkins_Guide.md`.
 | `04_Work_Division.md` | 3-member workstreams, 17 Sep → 21 Nov phase plan, RACI matrix |
 | `05_Docker_Guide.md` | every container/env var explained + troubleshooting |
 | `06_Jenkins_Guide.md` | CI pipeline stages + zero-click Jenkins (AUTO mode) |
-| `07_Jira_Guide.md` | full board setup, 8-sprint plan (17 Sept start, mid-eval 20 Sept), ~157 story points, step-by-step import |
+| `07_Jira_Guide.md` | full board setup, 9-sprint plan, CSV import, GitHub for Jira |
+| `08_Testing_Guide.md` | unit tests, Selenium UI tests, Postman/Newman collection, Jenkins test stages, GitHub webhook |
 | `08_GitHub_Guide.md` | branching, PRs, issues, commit convention, large-file policy |
 | `09_Demo_and_Viva.md` | 10-min demo script + 16 viva Q&As |
 
