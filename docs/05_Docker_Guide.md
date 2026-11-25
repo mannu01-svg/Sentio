@@ -150,3 +150,24 @@ docker exec sma-mongodb mongosh sentio --quiet --eval "db.analyses.find().sort({
 | port already in use | local Postgres/Mongo/other app | change the left port in `docker-compose.yml` |
 | model download failed | network | `docker compose up models && docker compose restart spark` |
 | Spark stuck after an unclean shutdown | stale checkpoint | `docker compose rm -sf spark && docker volume rm sentio_checkpoints && docker compose up -d spark` |
+
+
+## YouTube API key (optional, needed on cloud servers)
+
+YouTube blocks yt-dlp from data-centre IPs ("Sign in to confirm you're not a bot"),
+so the GitHub Actions cloud demo needs the official **YouTube Data API v3**.
+It is free (10,000 units/day, roughly 100 video analyses) and needs no card.
+
+1. Open console.cloud.google.com, sign in, then create a project (e.g. `sentio`).
+2. **APIs & Services** -> **Library** -> search **YouTube Data API v3** -> **Enable**.
+3. **APIs & Services** -> **Credentials** -> **Create credentials** -> **API key**. Copy it.
+4. Optional: **Edit API key** -> **API restrictions** -> restrict to YouTube Data API v3.
+
+Use it:
+
+* **Laptop:** create a file named `.env` in the project folder with
+  `YOUTUBE_API_KEY=your-key`, then `docker compose up -d api`. `.env` is git-ignored.
+* **Cloud demo:** repo admin -> **Settings** -> **Secrets and variables** -> **Actions**
+  -> **New repository secret**: name `YOUTUBE_API_KEY`, value = the key.
+
+Without a key Sentio falls back to yt-dlp, which works on home networks.

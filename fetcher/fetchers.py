@@ -3,7 +3,8 @@
 Sources, one normalized output shape per comment:
     {id, source, author, text, post_id, post_title, label}
 
-- YouTube: yt-dlp (no API key needed) grabs the video title + up to N comments
+- YouTube: official YouTube Data API v3 when YOUTUBE_API_KEY is set (free key,
+           works from cloud servers), otherwise yt-dlp (no key, home networks)
 - Reddit:  PullPush API (api.pullpush.io, no auth) fetches submission + comments
 - X/Twitter: sylation Nitter instances (no auth) or mastodon-style public feeds
 - Mastodon/Bluesky-style public APIs work without keys; Facebook/Instagram
@@ -38,18 +39,89 @@ def detect_platform(url: str) -> str:
     return "unknown"
 
 
+
+YT_API = "https://www.googleapis.com/youtube/v3"
+YT_BOT_HINT = ("YouTube blocks this server's network (bot check). Set YOUTUBE_API_KEY "
+               "(free, no card: Google Cloud Console -> enable 'YouTube Data API v3' -> "
+               "Credentials -> API key) to fetch through the official API instead.")
+
+
+def _yt_api_key() -> str:
+    return (os.getenv("YOUTUBE_API_KEY") or "").strip()
+
+
+def _yt_api_get(path: str, **params) -> dict:
+    """GET a YouTube Data API v3 endpoint; raises RuntimeError with Google's reason."""
+    params["key"] = _yt_api_key()
+    resp = requests.get(f"{YT_API}/{path}", params=params, timeout=20)
+    if resp.status_code != 200:
+        try:
+            err = resp.json()["error"]
+            reason = (err.get("errors") or [{}])[0].get("reason") or err.get("status")
+            msg = err.get("message", "")
+        except Exception:
+            reason, msg = resp.status_code, resp.text[:150]
+        if reason == "commentsDisabled":
+            raise ValueError("Comments are turned off for this video")
+        if reason in ("quotaExceeded", "dailyLimitExceeded"):
+            raise RuntimeError("YouTube API daily quota used up - try again tomorrow or paste comments")
+        raise RuntimeError(f"YouTube API error ({reason}): {msg[:150]}")
+    return resp.json()
+
+
+def _fetch_youtube_api(video_id: str, limit: int) -> dict:
+    """Title + top-level comments through the official YouTube Data API v3."""
+    from datetime import datetime
+
+    items = _yt_api_get("videos", part="snippet", id=video_id).get("items") or []
+    if not items:
+        raise ValueError(f"YouTube video {video_id} not found (private or removed?)")
+    title = items[0]["snippet"].get("title") or f"YouTube video {video_id}"
+
+    comments, page = [], None
+    while len(comments) < limit:
+        params = dict(part="snippet", videoId=video_id, maxResults=min(100, limit - len(comments)),
+                      order="relevance", textFormat="plainText")
+        if page:
+            params["pageToken"] = page
+        data = _yt_api_get("commentThreads", **params)
+        for item in data.get("items", []):
+            top = item["snippet"]["topLevelComment"]
+            sn = top["snippet"]
+            text = (sn.get("textDisplay") or sn.get("textOriginal") or "").strip()
+            if text:
+                comments.append({
+                    "id": f"ytv-{video_id}-{top.get('id') or uuid.uuid4().hex[:8]}",
+                    "source": "youtube",
+                    "author": (sn.get("authorDisplayName") or "anonymous")[:120],
+                    "text": text,
+                    "post_id": video_id,
+                    "post_title": title,
+                    "label": None,
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                })
+        page = data.get("nextPageToken")
+        if not page:
+            break
+    return {"post_id": video_id, "post_title": title, "source": "youtube", "comments": comments[:limit]}
+
+
 def fetch_youtube(url: str, limit: int = 200) -> dict:
+    """Fetch video title + comments: YouTube Data API if YOUTUBE_API_KEY is set, else yt-dlp."""
+    video_id = YT_URL.search(url).group(1)
+    if _yt_api_key():
+        return _fetch_youtube_api(video_id, limit)
+    return _fetch_youtube_ytdlp(video_id, limit)
+
+
+def _fetch_youtube_ytdlp(video_id: str, limit: int = 200) -> dict:
     """Fetch video title + comments via yt-dlp (no API key)."""
     import json
     import subprocess
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    video_id = YT_URL.search(url).group(1)
-    ytdlp_bin = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".venv", "bin", "yt-dlp")
-    if not os.path.exists(ytdlp_bin):
-        ytdlp_bin = "yt-dlp"  # fall back to PATH
     opts = [
-        ytdlp_bin, "--skip-download", "--no-warnings",
+        _ytdlp_bin(), "--skip-download", "--no-warnings",
         "--write-comments", "--extractor-args", f"youtube:max_comments={min(limit, 100)},all,all,all",
         "--print", "%(.title)s",
         "--print", "%(comments)j",
@@ -57,7 +129,10 @@ def fetch_youtube(url: str, limit: int = 200) -> dict:
     ]
     raw = subprocess.run(opts, capture_output=True, text=True, timeout=240)
     if raw.returncode != 0:
-        raise RuntimeError(f"yt-dlp failed: {raw.stderr.strip()[:200]}")
+        err = raw.stderr.strip()
+        if "confirm you" in err and "bot" in err:
+            raise RuntimeError(YT_BOT_HINT)
+        raise RuntimeError(f"yt-dlp failed: {err[:200]}")
 
     lines = [line for line in raw.stdout.splitlines() if line.strip()]
     title = lines[0].strip() if lines else f"YouTube video {video_id}"
@@ -273,20 +348,56 @@ def fetch_youtube_account(handle: str, limit: int = 100, max_videos: int = 5) ->
     """Fetch comments across the latest videos of a YouTube channel.
 
     Returns a list of per-post dicts shaped like fetch_youtube output.
-    Uses yt-dlp flat-playlist (no API key) to list video ids.
+    Lists video ids with the Data API (YOUTUBE_API_KEY) or yt-dlp flat-playlist.
     """
-    import json
-    import subprocess
-    from datetime import datetime, timezone
-
     handle = _clean_handle(handle)
+    if _yt_api_key():
+        videos = _youtube_api_latest_videos(handle, max_videos)
+    else:
+        videos = _youtube_ytdlp_latest_videos(handle, max_videos)
+    if not videos:
+        raise ValueError(f"No videos found for YouTube channel @{handle}")
+
+    posts = []
+    for vid, _vtitle in videos:
+        try:
+            post = fetch_youtube(f"https://www.youtube.com/watch?v={vid}", limit)
+            if post["comments"]:
+                posts.append(post)
+        except Exception:
+            continue  # skip videos whose comments are off/limited
+        time.sleep(0 if _yt_api_key() else 1)  # be polite to yt-dlp's scraping
+
+    if not posts:
+        raise ValueError(f"No comments could be fetched for @{handle} (comments may be disabled)")
+    return posts
+
+
+def _youtube_api_latest_videos(handle: str, max_videos: int) -> list[tuple[str, str]]:
+    """Latest uploads of @handle via the Data API (channels.forHandle -> uploads playlist)."""
+    chans = _yt_api_get("channels", part="contentDetails", forHandle=f"@{handle}").get("items") or []
+    if not chans:
+        raise ValueError(f"YouTube channel @{handle} not found")
+    uploads = chans[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+    items = _yt_api_get("playlistItems", part="snippet", playlistId=uploads,
+                        maxResults=max(1, min(max_videos, 50))).get("items") or []
+    return [(it["snippet"]["resourceId"]["videoId"], it["snippet"].get("title", "")) for it in items]
+
+
+def _youtube_ytdlp_latest_videos(handle: str, max_videos: int) -> list[tuple[str, str]]:
+    """Latest uploads of @handle via yt-dlp flat-playlist (no key)."""
+    import subprocess
+
     opts = [
         _ytdlp_bin(), "--flat-playlist", "--no-warnings", "--playlist-end", str(max_videos),
         "--print", "%(id)s|%(title)s", f"https://www.youtube.com/@{handle}/videos",
     ]
     raw = subprocess.run(opts, capture_output=True, text=True, timeout=120)
     if raw.returncode != 0:
-        raise RuntimeError(f"yt-dlp channel listing failed: {raw.stderr.strip()[:200]}")
+        err = raw.stderr.strip()
+        if "confirm you" in err and "bot" in err:
+            raise RuntimeError(YT_BOT_HINT)
+        raise RuntimeError(f"yt-dlp channel listing failed: {err[:200]}")
 
     videos = []
     for line in raw.stdout.splitlines():
@@ -294,22 +405,7 @@ def fetch_youtube_account(handle: str, limit: int = 100, max_videos: int = 5) ->
         if "|" in line and len(line.split("|", 1)[0]) == 11:
             vid, vtitle = line.split("|", 1)
             videos.append((vid, vtitle))
-    if not videos:
-        raise ValueError(f"No videos found for YouTube channel @{handle}")
-
-    posts = []
-    for vid, vtitle in videos:
-        try:
-            post = fetch_youtube(f"https://www.youtube.com/watch?v={vid}", limit)
-            if post["comments"]:
-                posts.append(post)
-        except Exception:
-            continue  # skip videos whose comments are off/limited
-        time.sleep(1)  # be polite
-
-    if not posts:
-        raise ValueError(f"No comments could be fetched for @{handle} (comments may be disabled)")
-    return posts
+    return videos
 
 
 def fetch_reddit_account(username: str, limit: int = 200) -> list[dict]:

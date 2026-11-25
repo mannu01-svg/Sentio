@@ -38,6 +38,9 @@ jobs:
       SKIP_BERT: ${{ inputs.fast_mode && '1' || '' }}
       SPARK_MASTER: "local[3]"
       NLP_TORCH_THREADS: "2"
+      # YouTube blocks cloud IPs for yt-dlp; with this repo secret Sentio uses the
+      # official YouTube Data API instead (free key, no card).
+      YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -95,6 +98,11 @@ jobs:
             echo "| Admin | \`admin@sentio.app\` / \`admin123\` |"
             echo "| Demo user | \`ada@sentio.app\` / \`secret123\` |"
             echo "| Swagger | $PUBLIC_URL/docs |"
+            if [ -n "$YOUTUBE_API_KEY" ]; then
+              echo "| YouTube links | ✅ via YouTube Data API |"
+            else
+              echo "| YouTube links | ⚠️ add repo secret YOUTUBE_API_KEY (cloud IPs are blocked) |"
+            fi
             echo "| Mode | ${SKIP_BERT:+fast (VADER only)}${SKIP_BERT:-full (VADER + DistilBERT + RoBERTa)} |"
             echo
             echo "Runs on a GitHub-hosted VM with Docker Compose (Kafka, Spark, PostgreSQL, MongoDB, FastAPI, nginx)."
