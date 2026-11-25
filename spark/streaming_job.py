@@ -193,6 +193,9 @@ def write_batch(batch_df, _batch_id: int, windows: bool = True) -> None:
     pdf = batch_df.select(*cols).toPandas()
     if pdf.empty:
         return
+    # missing model scores arrive as NaN (fast mode / model unavailable): store them
+    # as NULL - NaN in PostgreSQL makes the API's JSON responses fail (blank charts)
+    pdf_db = pdf.astype(object).where(pd.notna(pdf), None)
 
     # 1. scored comments -> PostgreSQL (idempotent upsert)
     rows = [
@@ -202,7 +205,7 @@ def write_batch(batch_df, _batch_id: int, windows: bool = True) -> None:
             r.vader_neutral, r.bert_label, r.bert_score,
             r.llm_label, r.llm_score, r.ts, r.post_id, r.post_title,
         )
-        for r in pdf.itertuples(index=False)
+        for r in pdf_db.itertuples(index=False)
     ]
     # defensive: a batch can contain the same id twice (producer replays);
     # ON CONFLICT cannot update the same row twice in one statement
@@ -232,7 +235,7 @@ def write_batch(batch_df, _batch_id: int, windows: bool = True) -> None:
         )
 
     # 2. scored comments -> Kafka `comments-scored` (dashboard live feed)
-    feed = pdf.drop(columns=["cleaned_text", "event_ts"])
+    feed = pdf_db.drop(columns=["cleaned_text", "event_ts"])
     producer = KafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP,
         value_serializer=lambda v: v.encode("utf-8"),
@@ -262,7 +265,7 @@ def write_batch(batch_df, _batch_id: int, windows: bool = True) -> None:
         "pos": (primary == "positive").astype(int),
         "neg": (primary == "negative").astype(int),
         "neu": (primary == "neutral").astype(int),
-        "score": pdf["llm_score"],
+        "score": pd.to_numeric(pdf["llm_score"], errors="coerce").fillna(pd.to_numeric(pdf["vader_score"], errors="coerce")),
     }).dropna(subset=["event_ts"])
     if work.empty:
         return
@@ -284,7 +287,8 @@ def write_batch(batch_df, _batch_id: int, windows: bool = True) -> None:
             r.window_start.to_pydatetime().replace(tzinfo=None),
             r.window_end.to_pydatetime().replace(tzinfo=None),
             int(r.total), int(r.positive), int(r.negative), int(r.neutral),
-            float(r.pos_pct), float(r.neg_pct), float(r.neu_pct), float(r.avg_score),
+            float(r.pos_pct), float(r.neg_pct), float(r.neu_pct),
+            None if pd.isna(r.avg_score) else float(r.avg_score),
         )
         for r in agg.itertuples(index=False)
     ]

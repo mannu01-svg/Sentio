@@ -10,6 +10,7 @@ Docs:
 import csv
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -21,7 +22,7 @@ import psycopg2
 import psycopg2.extras
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fetcher"))
@@ -44,10 +45,33 @@ STOPWORDS = set(
     also im dont its ive youre wouldnt couldnt""".split()
 )
 
+class SafeJSONResponse(JSONResponse):
+    """JSON responses that turn NaN/Infinity into null.
+
+    Rows written while a model was off (fast mode) can hold NaN scores; the
+    standard encoder refuses them and the whole endpoint fails with a 500
+    (the dashboard then shows an empty "Sentiment over time" chart)."""
+
+    @staticmethod
+    def _finite(value):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        if isinstance(value, dict):
+            return {k: SafeJSONResponse._finite(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [SafeJSONResponse._finite(v) for v in value]
+        return value
+
+    def render(self, content) -> bytes:
+        return json.dumps(self._finite(content), ensure_ascii=False, allow_nan=False,
+                          separators=(",", ":")).encode("utf-8")
+
+
 app = FastAPI(
     title="Social Media Sentiment Analysis API",
     description="Serves aggregated sentiment analytics produced by the Kafka + Spark pipeline.",
     version="1.0.0",
+    default_response_class=SafeJSONResponse,
 )
 
 app.add_middleware(
