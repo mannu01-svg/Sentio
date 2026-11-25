@@ -163,7 +163,7 @@ jobs:
             if [ -n "${{ secrets.ADMIN_PASSWORD }}" ]; then
               echo "| Admin password | repo secret \`ADMIN_PASSWORD\` |"
             else
-              echo "| Admin password | random — check the *Seed users + topics* step log |"
+              echo "| Admin password | \`admin123\` (default) |"
             fi
             echo "| Demo user | \`ada@sentio.app\` / \`secret123\` |"
             echo

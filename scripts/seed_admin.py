@@ -1,25 +1,41 @@
 #!/usr/bin/env python3
-"""Seed the admin account (admin@sentio.app — approval-gated deployment).
+"""Seed the default admin account: admin@sentio.app / admin123.
 
-Creates/updates the seeded admin so public signups can be approved from
-Settings -> User Management. The password is printed once on first create;
-re-running only tops up a missing/broken admin row (never resets a password).
+The default login ALWAYS works — every start.sh runs this, and the seed
+verifies the stored password, repairing it (and the role/status) whenever
+the admin row is missing, was left pending/rejected, or had its password
+changed. ADMIN_PASSWORD env overrides the default (CI demos: repo secret).
 
 Idempotent: safe to run any time.
 """
 
 import hashlib
+import hmac
 import os
 import secrets
 import sys
 
 import psycopg2
 
+DEFAULT_ADMIN_EMAIL = "admin@sentio.app"
+DEFAULT_ADMIN_PASSWORD = "admin123"
+
 
 def _hash_password(password: str, salt: str | None = None) -> str:
     salt = salt or secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 120_000)
     return f"pbkdf2_sha256$120000${salt}${digest.hex()}"
+
+
+def _verify_password(password: str, stored: str) -> bool:
+    try:
+        algo, iters, salt, hexdigest = stored.split("$")
+        if algo != "pbkdf2_sha256":
+            return False
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), int(iters))
+        return hmac.compare_digest(digest.hex(), hexdigest)
+    except (ValueError, AttributeError):
+        return False
 
 
 def main() -> int:
@@ -32,38 +48,47 @@ def main() -> int:
         print(f"  ⏭ postgres not reachable ({exc.__class__.__name__}) — admin seeds on the next run")
         return 0
 
+    password = os.getenv("ADMIN_PASSWORD") or DEFAULT_ADMIN_PASSWORD
+
     with conn, conn.cursor() as cur:
         # make sure the role/status columns exist (pre-migration databases)
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'user'")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'approved'")
 
-        cur.execute("SELECT status FROM users WHERE email = 'admin@sentio.app'")
+        cur.execute(
+            "SELECT password_hash, role, status FROM users WHERE email = %s",
+            (DEFAULT_ADMIN_EMAIL,),
+        )
         row = cur.fetchone()
-        if row and row[0] == "approved":
-            print("  ✓ admin account already present: admin@sentio.app")
+        password_hash, role, status = row if row else (None, None, None)
+        healthy = (
+            row is not None
+            and role == "admin"
+            and status == "approved"
+            and _verify_password(password, password_hash)
+        )
+        if healthy:
+            print(f"  ✓ admin login ready: {DEFAULT_ADMIN_EMAIL} / {'(from ADMIN_PASSWORD env)' if os.getenv('ADMIN_PASSWORD') else DEFAULT_ADMIN_PASSWORD}")
             return 0
 
-        # ADMIN_PASSWORD env override (CI demos: set once as a repo secret);
-        # default: random, printed once
-        password = os.getenv("ADMIN_PASSWORD") or secrets.token_urlsafe(9)
+        # missing / wrong password / pending / demoted — repair the row so the
+        # default login always works after every start.sh
         cur.execute(
             "INSERT INTO users (email, name, password_hash, role, status) "
             "VALUES (%s, %s, %s, 'admin', 'approved') "
-            "ON CONFLICT (email) DO UPDATE SET role = 'admin', status = 'approved' "
-            "WHERE users.status <> 'approved' OR users.role <> 'admin'",
-            ("admin@sentio.app", "Sentio Admin", _hash_password(password)),
+            "ON CONFLICT (email) DO UPDATE SET "
+            "password_hash = EXCLUDED.password_hash, role = 'admin', status = 'approved'",
+            (DEFAULT_ADMIN_EMAIL, "Sentio Admin", _hash_password(password)),
         )
+        conn.commit()
         if row is None:
-            conn.commit()
-            print("  ✓ admin account created: admin@sentio.app")
-            if os.getenv("ADMIN_PASSWORD"):
-                print("  ✓ admin password: from ADMIN_PASSWORD env")
-            else:
-                print(f"  ✓ admin password (save it now): {password}")
+            print(f"  ✓ admin account created: {DEFAULT_ADMIN_EMAIL}")
         else:
-            # admin existed but was pending/rejected — re-approve, keep old password
-            conn.commit()
-            print("  ✓ existing admin re-approved: admin@sentio.app")
+            print(f"  ✓ admin login repaired (was missing/pending/wrong password): {DEFAULT_ADMIN_EMAIL}")
+        if os.getenv("ADMIN_PASSWORD"):
+            print("  ✓ admin password: from ADMIN_PASSWORD env")
+        else:
+            print(f"  ✓ admin password: {DEFAULT_ADMIN_PASSWORD}")
     conn.close()
     return 0
 

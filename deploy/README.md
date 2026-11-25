@@ -39,11 +39,12 @@ to uvicorn behind the scenes.
 ## Accounts (approval-gated)
 
 - Signups land as **pending** — nobody can use the dashboard until approved.
-- The seeded admin (`admin@sentio.app`) approves accounts from
-  **Settings → User Management** (approve / reject / role / delete).
-- The admin password is printed once by the seed step
-  (`scripts/seed_admin.py`, runs inside `start.sh`); re-run it any time to
-  see the reminder or re-approve a rejected admin.
+- The default admin **`admin@sentio.app` / `admin123`** always works:
+  `scripts/seed_admin.py` runs inside `start.sh` and repairs the row
+  (missing / pending / wrong password) on every start.
+  `ADMIN_PASSWORD` env overrides the default (CI demos: repo secret).
+- Admin approves accounts from **Settings → User Management**
+  (approve / reject / role / delete).
 - All mutating endpoints (`/api/analyze`, `/api/analyze-account`,
   `/api/topics/stream`, `/api/stream/live|stop`, `/api/admin/*`) require
   `Authorization: Bearer <token>` issued at login.

@@ -205,3 +205,46 @@ def test_keyword_search_requires_token():
     body = res.json()
     # no matching pool rows is a graceful error, not a 500
     assert body.get("status") in ("ok", "error")
+
+
+@requires_db
+def test_default_admin_login_always_works():
+    """Contract: admin@sentio.app / admin123 works after every seed run —
+    the seed verifies the stored password and repairs the row when needed."""
+    import scripts.seed_admin as seed_admin
+
+    # 1. healthy path: seed → login works
+    assert seed_admin.main() == 0
+    res = client.post(
+        "/api/login", json={"email": "admin@sentio.app", "password": "admin123"}
+    )
+    body = res.json()
+    assert body["status"] == "ok", body
+    assert body["role"] == "admin"
+
+    # 2. self-heal: corrupt the stored password in DB → seed repairs → login works
+    import psycopg2
+
+    conn = psycopg2.connect(
+        host=os.getenv("PG_HOST", "localhost"),
+        port=int(os.getenv("PG_PORT", "5432")),
+        dbname=os.getenv("PG_DB", "sentiment"),
+        user=os.getenv("PG_USER", "sentiment"),
+        password=os.getenv("PG_PASSWORD", "sentiment"),
+        connect_timeout=3,
+    )
+    with conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET password_hash = %s WHERE email = %s",
+            (seed_admin._hash_password("wrong-old-password"), "admin@sentio.app"),
+        )
+    conn.close()
+    res = client.post(
+        "/api/login", json={"email": "admin@sentio.app", "password": "admin123"}
+    )
+    assert res.json()["status"] == "error"  # broken before the repair
+    assert seed_admin.main() == 0
+    res = client.post(
+        "/api/login", json={"email": "admin@sentio.app", "password": "admin123"}
+    )
+    assert res.json()["status"] == "ok"  # repaired by the seed
