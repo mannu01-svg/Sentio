@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { Link } from "react-router-dom"
-import { fetchHistory } from "../lib/api"
+import { fetchHistory, rehydrateHistory } from "../lib/api"
 import { usePolling } from "../lib/hooks"
 import { Card, SectionTitle, EmptyState, Skeleton } from "../components/UI"
 import { PlatformBadge } from "../components/Brand"
@@ -29,8 +29,28 @@ function targetRoute(entry) {
 
 export default function History() {
   const [kind, setKind] = useState("")
+  const [busyId, setBusyId] = useState(null)
+  const [notice, setNotice] = useState(null)
   const state = usePolling(() => fetchHistory({ kind }), [kind], 8000)
   const entries = state.data?.history ?? []
+
+  const rescore = async (entry) => {
+    setBusyId(entry.id)
+    setNotice(null)
+    try {
+      const res = await rehydrateHistory(entry.id)
+      setNotice(
+        res.status === "ok"
+          ? `Re-scoring "${entry.title || entry.keyword}" — ${res.comments_published} comments pushed, scores land in ~30-60s`
+          : res.message || "Could not re-score that entry"
+      )
+      setTimeout(() => state.refresh?.(), 3000)
+    } catch (err) {
+      setNotice(err.message)
+    } finally {
+      setBusyId(null)
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -55,6 +75,12 @@ export default function History() {
           {entries.length} analyses · stored in PostgreSQL · survives restarts
         </span>
       </div>
+
+      {notice && (
+        <div className="rounded-xl border px-4 py-2.5 text-xs" style={{ borderColor: "var(--border-soft)", background: "var(--chip)" }}>
+          {notice}
+        </div>
+      )}
 
       {!state.data ? (
         <div className="space-y-2">
@@ -107,6 +133,16 @@ export default function History() {
                         <span style={{ color: "var(--negative)" }}>{s.negative_pct || 0}% neg</span>
                       </div>
                     </div>
+                  )}
+                  {entry.scored === 0 && (
+                    <button
+                      className="chip shrink-0"
+                      disabled={busyId === entry.id}
+                      onClick={() => rescore(entry)}
+                      title="The original comments left the rolling pool — re-fetch and re-score them"
+                    >
+                      {busyId === entry.id ? "⏳ Re-scoring…" : "↻ Re-score"}
+                    </button>
                   )}
                   {route && (
                     <Link to={route} className="btn shrink-0 text-xs">

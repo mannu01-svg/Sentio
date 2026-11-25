@@ -945,6 +945,174 @@ def history(request: Request,
     return {"history": out, "count": len(out)}
 
 
+@app.post("/api/history/{entry_id}/rehydrate")
+def history_rehydrate(entry_id: int, request: Request):
+    """Re-score a history entry whose comments were lost from the pool.
+
+    kind=post    -> re-fetch the stored video/post ids via yt-dlp/PullPush and
+                    publish under the SAME post_id (Spark rescores, the
+                    original entry un-pends)
+    kind=topic   -> re-run the pool-match (keyword + platform are stored) and
+                    publish under the ORIGINAL topic post_id
+    kind=account -> re-fetch every stored post id
+    Requires a valid Bearer token.
+    """
+    session = _require_session(request, None)
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, kind, post_id, title, platform, handle, keyword, posts, user_email "
+            "FROM history WHERE id = %s",
+            (entry_id,),
+        )
+        entry = cur.fetchone()
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"No history entry {entry_id}")
+    if entry["user_email"] and entry["user_email"] != session["email"]:
+        raise HTTPException(status_code=403, detail="this analysis belongs to another account")
+
+    import fetchers
+    import publisher
+
+    kind = entry["kind"]
+    platform = (entry["platform"] or "").lower()
+    stored_ids = [p for p in (entry["posts"] or "").split(",") if p]
+    if entry["post_id"] and entry["post_id"] not in stored_ids:
+        stored_ids.append(entry["post_id"])
+
+    published_total, healed_ids = 0, []
+    now_iso = datetime.now().isoformat(timespec="seconds")
+
+    if kind == "post" and platform == "youtube":
+        # re-fetch each stored video's comments via yt-dlp, SAME post_id
+        for pid in stored_ids[:10]:
+            try:
+                post = fetchers.fetch_youtube(f"https://www.youtube.com/watch?v={pid}", limit=100)
+                if not post["comments"]:
+                    continue
+                published_total += publisher.publish_comments(post["comments"])
+                healed_ids.append(pid)
+            except Exception:
+                continue  # comments off / video gone — skip
+        if not healed_ids:
+            return {"status": "error",
+                    "message": "Could not re-fetch comments for that post (video comments may be disabled)"}
+
+    elif kind == "account" and platform == "youtube":
+        # re-fetch every stored video's comments, SAME post ids (account heal)
+        for pid in stored_ids[:10]:
+            try:
+                post = fetchers.fetch_youtube(f"https://www.youtube.com/watch?v={pid}", limit=100)
+                if not post["comments"]:
+                    continue
+                published_total += publisher.publish_comments(post["comments"])
+                healed_ids.append(pid)
+            except Exception:
+                continue
+        if not healed_ids:
+            return {"status": "error",
+                    "message": "Could not re-fetch comments for that account's videos"}
+
+    elif kind in ("post", "account") and platform == "reddit":
+        for pid in stored_ids[:10]:
+            try:
+                # subreddit is not stored — PullPush accepts the bare id via search
+                post = fetchers.fetch(f"https://www.reddit.com/comments/{pid}", limit=100)
+                if not post["comments"]:
+                    continue
+                published_total += publisher.publish_comments(post["comments"])
+                healed_ids.append(pid)
+            except Exception:
+                continue
+        if not healed_ids:
+            return {"status": "error", "message": "Could not re-fetch comments for that post (PullPush may be rate-limiting)"}
+
+    elif kind == "topic":
+        keyword = entry["keyword"] or ""
+        topic_post_id = stored_ids[0] if stored_ids else \
+            f"topic-{platform}-{re.sub(r'[^a-z0-9]+', '-', keyword.lower())[:40]}-{uuid.uuid4().hex[:6]}"
+        if platform == "youtube":
+            # re-fetch the SAME video ids when stored; otherwise search the keyword
+            video_ids = [p for p in stored_ids if len(p) == 11 and p != topic_post_id]
+            if not video_ids:
+                ytdlp_bin = fetchers._ytdlp_bin()
+                import subprocess
+                raw = subprocess.run(
+                    [ytdlp_bin, "--flat-playlist", "--no-warnings", "--playlist-end", "3",
+                     "--print", "%(id)s|%(title)s", f"ytsearch3:{keyword}"],
+                    capture_output=True, text=True, timeout=60,
+                )
+                video_ids = [ln.split("|", 1)[0] for ln in raw.stdout.splitlines()
+                             if "|" in ln and len(ln.split("|", 1)[0]) == 11] if raw.returncode == 0 else []
+            for vid in video_ids[:5]:
+                try:
+                    post = fetchers.fetch_youtube(f"https://www.youtube.com/watch?v={vid}", limit=100)
+                    if not post["comments"]:
+                        continue
+                    comments = [
+                        {**c, "post_id": topic_post_id, "post_title": f"Topic: {keyword}",
+                         "id": f"{topic_post_id}-{i}", "ts": now_iso}
+                        for i, c in enumerate(post["comments"])
+                    ]
+                    published_total += publisher.publish_comments(comments)
+                    healed_ids.append(vid)
+                except Exception:
+                    continue
+        elif platform in ("x", "reddit"):
+            # re-run the SQL pool-match under the ORIGINAL topic post id
+            topic_words = [w for w in re.findall(r"[a-z']{3,}", keyword.lower())][:6]
+            if not topic_words:
+                return {"status": "error", "message": f"No searchable words in '{keyword}'"}
+            like_clauses = " OR ".join(["text ILIKE %s"] * len(topic_words))
+            with db() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT DISTINCT ON (lower(text)) id, author, text
+                    FROM comments
+                    WHERE source = %s AND ({like_clauses})
+                    ORDER BY lower(text), ts DESC NULLS LAST
+                    LIMIT 200
+                    """,
+                    (platform, *[f"%{w}%" for w in topic_words]),
+                )
+                matches = cur.fetchall()
+            if not matches:
+                return {"status": "error",
+                        "message": f"No {platform} comments about '{keyword}' in the pool"}
+            comments = [
+                {
+                    "id": f"{topic_post_id}-{i}",
+                    "source": platform,
+                    "author": row["author"] or "anonymous",
+                    "text": row["text"],
+                    "post_id": topic_post_id,
+                    "post_title": f"Topic: {keyword}",
+                    "label": None,
+                    "ts": now_iso,
+                }
+                for i, row in enumerate(matches)
+            ]
+            published_total += publisher.publish_comments(comments)
+            healed_ids.append(topic_post_id)
+        else:
+            return {"status": "error", "message": f"Cannot rehydrate topics on {platform or 'unknown'}"}
+        if not healed_ids:
+            return {"status": "error", "message": "Could not re-fetch comments for that topic"}
+
+    else:
+        return {"status": "error",
+                "message": f"Re-score supports youtube/reddit posts and topics (this entry: {kind}/{platform or '?'})"}
+
+    return {
+        "status": "ok",
+        "entry_id": entry_id,
+        "kind": kind,
+        "comments_published": published_total,
+        "healed_ids": healed_ids,
+        "note": "Comments are streaming through Kafka -> Spark — the entry un-pends in ~30-60s "
+                "(scores land under the original post id)",
+    }
+
+
 @app.post("/api/analyze")
 def analyze(req: AnalyzeRequest, request: Request):
     """Fetch comments for a post URL (or pasted text) and push them into the pipeline.

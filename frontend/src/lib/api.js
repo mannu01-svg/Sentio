@@ -139,6 +139,10 @@ export const adminSetRole = (email, role) =>
 export const adminDeleteUser = (email) =>
   post("/api/admin/users/delete", { email })
 
+// ---- history re-score (lost comments -> re-fetch -> Kafka -> rescored) ----
+export const rehydrateHistory = (entryId) =>
+  post(`/api/history/${entryId}/rehydrate`, {})
+
 export function exportUrl(filters = {}) {
   const params = new URLSearchParams()
   if (filters.source) params.set("source", filters.source)
