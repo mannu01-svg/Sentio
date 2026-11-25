@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Spark Structured Streaming job.
 
-Reads raw comment JSON events from Kafka (`comments-raw`), cleans and scores
-them with VADER + DistilBERT (spark/nlp.py), aggregates 1-minute windows, and
-writes:
+Reads raw comment JSON events from Kafka, cleans and scores them with VADER +
+DistilBERT + RoBERTa (spark/nlp.py), aggregates 1-minute windows, and writes:
   - scored comments -> Kafka topic `comments-scored` (live feed)
   - scored comments -> PostgreSQL table `comments`   (history/API, id-upsert)
   - window aggregates -> PostgreSQL table `window_stats` (charts/API, upsert)
@@ -17,8 +16,15 @@ Throughput notes (why this looks the way it does):
     nlp.py warms torch thread limits + model loads at fork time, so the
     expensive part is paid once per worker, not per row.
 
+Two streaming queries share the same scoring graph:
+  - `comments-raw`     seed + live replay stream (feeds the live dashboard)
+  - `comments-analyze` comments from analyses users run (links, accounts,
+                       topics, re-score). Its own query in its own FAIR
+                       scheduler pool, so these are scored within seconds
+                       instead of waiting behind thousands of replay comments.
+
 Run:
-    ./run_spark.sh
+    docker compose up -d spark      (or ./run_spark.sh outside Docker)
 Env:
     SKIP_BERT=1   # smoke mode: skip DistilBERT (nulls), much lighter
 """
@@ -47,6 +53,12 @@ CHECKPOINT = os.getenv("CHECKPOINT_DIR", "checkpoints")
 WINDOW_SECONDS = int(os.getenv("WINDOW_SECONDS", "60"))
 SKIP_BERT = os.getenv("SKIP_BERT", "") == "1"
 TRIGGER_SECONDS = os.getenv("TRIGGER_SECONDS", "10")
+ANALYZE_TOPIC = os.getenv("KAFKA_ANALYZE_TOPIC", "comments-analyze")
+ANALYZE_TRIGGER_SECONDS = os.getenv("ANALYZE_TRIGGER_SECONDS", "3")
+# smaller replay batches finish sooner, so a busy CPU frees up between batches
+MAX_OFFSETS_PER_TRIGGER = int(os.getenv("MAX_OFFSETS_PER_TRIGGER", "2000"))
+# Docker image: the Kafka connector jars are pre-downloaded here at build time
+EXTRA_JARS_DIR = os.getenv("SPARK_EXTRA_JARS", "")
 
 RAW_SCHEMA = (
     T.StructType()
@@ -85,10 +97,17 @@ def bert_full_schema(base_schema: T.StructType) -> T.StructType:
 
 
 def build_spark() -> SparkSession:
+    builder = SparkSession.builder.appName("social-media-sentiment").master(os.getenv("SPARK_MASTER", "local[6]"))
+    jars = []
+    if EXTRA_JARS_DIR and os.path.isdir(EXTRA_JARS_DIR):
+        jars = [os.path.join(EXTRA_JARS_DIR, j) for j in sorted(os.listdir(EXTRA_JARS_DIR)) if j.endswith(".jar")]
+    if jars:
+        builder = builder.config("spark.jars", ",".join(jars))
+    else:
+        builder = builder.config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4")
     return (
-        SparkSession.builder.appName("social-media-sentiment")
-        .master(os.getenv("SPARK_MASTER", "local[6]"))
-        .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4")
+        builder
+        .config("spark.scheduler.mode", "FAIR")   # analyze query gets its share even mid replay batch
         .config("spark.sql.shuffle.partitions", "4")
         # laptops: SPARK_DRIVER_MEMORY=2g SPARK_MASTER=local[4] if 16GB RAM
         .config("spark.driver.memory", os.getenv("SPARK_DRIVER_MEMORY", "4g"))
@@ -106,7 +125,10 @@ def bert_map(iterator):
     import), so the first pdf pays nothing and later batches reuse them.
     """
     if not SKIP_BERT:
-        nlp.warm()  # loads torch thread caps + both pipelines once per worker
+        try:
+            nlp.warm()  # loads torch thread caps + both pipelines once per worker
+        except Exception as exc:  # models not downloaded yet: keep scoring with VADER
+            print(f"transformer models unavailable ({exc.__class__.__name__}); VADER-only for this batch")
     for pdf in iterator:
         if pdf.empty:
             yield pdf
@@ -153,7 +175,7 @@ def upsert_stats_rows(rows: list[tuple]) -> None:
         )
 
 
-def write_batch(batch_df, _batch_id: int) -> None:
+def write_batch(batch_df, _batch_id: int, windows: bool = True) -> None:
     """Single sink for the whole graph: writes scored comments to PostgreSQL,
     pushes them to Kafka `comments-scored`, and refreshes window aggregates.
 
@@ -228,6 +250,11 @@ def write_batch(batch_df, _batch_id: int) -> None:
     producer.flush()
     producer.close()
 
+    # analyses carry the platforms' own (often old) comment timestamps: they are
+    # not part of the live stream, so they don't touch the live 1-minute windows
+    if not windows:
+        return
+
     # 3. 1-minute window aggregates, computed batch-locally (headline = LLM label)
     primary = pdf["llm_label"].fillna(pdf["vader_label"])
     work = pd.DataFrame({
@@ -264,33 +291,25 @@ def write_batch(batch_df, _batch_id: int) -> None:
     upsert_stats_rows(stat_rows)
 
 
-def main() -> None:
-    spark = build_spark()
-    spark.sparkContext.setLogLevel("WARN")
-
-    # 0. Fresh clone/first run: checkpoint state decides the offset start.
-    #    No checkpoint = first run ever → start from EARLIEST so the seed pass
-    #    published by the producer is never skipped (latest would drop it).
-    first_run = not os.path.exists(os.path.join(CHECKPOINT, "pg-comments", "_metadata"))
-    print("first run — startingOffsets: earliest" if first_run else "resuming from checkpoint offsets")
-
-    # 1. Raw stream from Kafka
+def score(spark: SparkSession, topic: str, starting: str, max_offsets: int):
+    """Kafka topic -> parsed JSON -> cleaned text -> VADER -> DistilBERT + RoBERTa."""
     raw = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
-        .option("subscribe", "comments-raw")
-        .option("startingOffsets", "earliest" if first_run else "latest")
-        .option("maxOffsetsPerTrigger", 8000)
+        .option("subscribe", topic)
+        .option("startingOffsets", starting)
+        .option("maxOffsetsPerTrigger", max_offsets)
         .option("failOnDataLoss", "false")
         .load()
     )
 
-    # 2. Parse JSON + clean text + event timestamp (fall back to Kafka time)
+    # Parse JSON + clean text + event timestamp (fall back to Kafka time)
     clean_udf = F.udf(nlp.clean_text, T.StringType())
     parsed = (
         raw.selectExpr("CAST(value AS STRING) AS json_str", "timestamp AS kafka_ts")
         .select(F.from_json("json_str", RAW_SCHEMA).alias("event"), "kafka_ts")
         .select("event.*", "kafka_ts")
+        .where(F.col("id").isNotNull())
         .withColumn("cleaned_text", clean_udf(F.coalesce(F.col("text"), F.lit(""))))
         .withColumn(
             "event_ts",
@@ -301,7 +320,7 @@ def main() -> None:
         )
     )
 
-    # 3. VADER scoring (pandas UDF -> vectorized batches)
+    # VADER scoring (pandas UDF -> vectorized batches)
     @F.pandas_udf(VADER_SCHEMA, F.PandasUDFType.SCALAR)
     def vader_udf(texts: pd.Series) -> pd.DataFrame:
         return pd.DataFrame([nlp.vader_analyze(t or "") for t in texts])
@@ -315,30 +334,53 @@ def main() -> None:
         F.col("v.vader_neutral").alias("vader_neutral"),
     ).drop("v")
 
-    # 4. DistilBERT + LLM scoring (skippable for quick smoke tests)
+    # DistilBERT + LLM scoring (skippable for quick smoke tests)
     if SKIP_BERT:
-        scored = scored.withColumn("bert_label", F.lit(None).cast(T.StringType())) \
-                       .withColumn("bert_score", F.lit(None).cast(T.DoubleType())) \
-                       .withColumn("llm_label", F.lit(None).cast(T.StringType())) \
-                       .withColumn("llm_score", F.lit(None).cast(T.DoubleType()))
-    else:
-        scored = scored.mapInPandas(bert_map, bert_full_schema(scored.schema))
+        return scored.withColumn("bert_label", F.lit(None).cast(T.StringType())) \
+                     .withColumn("bert_score", F.lit(None).cast(T.DoubleType())) \
+                     .withColumn("llm_label", F.lit(None).cast(T.StringType())) \
+                     .withColumn("llm_score", F.lit(None).cast(T.DoubleType()))
+    return scored.mapInPandas(bert_map, bert_full_schema(scored.schema))
 
-    # 5. 1-minute window aggregates are computed inside write_batch (batch-local,
-    #    no watermark/shuffle) — see write_batch below.
 
-    # 6. ONE query, ONE trigger: the graph (kafka -> clean -> VADER -> BERT/LLM)
-    #    is computed once per micro-batch and write_batch fans out to PostgreSQL,
-    #    Kafka feed and window_stats. (Three separate writeStream queries would
-    #    recompute the whole graph three times per batch.)
-    print("Streaming: comments-raw -> [clean, VADER", "+ DistilBERT" if not SKIP_BERT else "", "]",
-          "-> PostgreSQL + comments-scored (trigger=", TRIGGER_SECONDS, "s)")
+def starting_offsets(name: str) -> str:
+    """No checkpoint yet = first run: read from EARLIEST so nothing already
+    published (seed pass, analyses made while Spark was starting) is skipped.
+    With a checkpoint, Spark resumes from it and this value is ignored."""
+    first_run = not os.path.exists(os.path.join(CHECKPOINT, name, "commits"))
+    print(f"[{name}]", "first run - startingOffsets: earliest" if first_run else "resuming from checkpoint offsets")
+    return "earliest"
+
+
+def main() -> None:
+    spark = build_spark()
+    spark.sparkContext.setLogLevel("WARN")
+    models = "VADER" if SKIP_BERT else "VADER + DistilBERT + RoBERTa"
+
+    # Query 1: seed + live replay -> PostgreSQL, comments-scored feed, live windows
+    spark.sparkContext.setLocalProperty("spark.scheduler.pool", "replay")
+    print(f"Streaming: comments-raw -> [clean, {models}] -> PostgreSQL + comments-scored (trigger={TRIGGER_SECONDS}s)")
     (
-        scored.writeStream.foreachBatch(write_batch)
+        score(spark, "comments-raw", starting_offsets("pg-comments"), MAX_OFFSETS_PER_TRIGGER)
+        .writeStream.foreachBatch(write_batch)
+        .queryName("replay")
         .option("checkpointLocation", f"{CHECKPOINT}/pg-comments")
         .trigger(processingTime=f"{TRIGGER_SECONDS} seconds")
         .start()
     )
+
+    # Query 2: user analyses -> scored straight away in their own pool
+    spark.sparkContext.setLocalProperty("spark.scheduler.pool", "analyze")
+    print(f"Streaming: {ANALYZE_TOPIC} -> [clean, {models}] -> PostgreSQL + comments-scored (trigger={ANALYZE_TRIGGER_SECONDS}s)")
+    (
+        score(spark, ANALYZE_TOPIC, starting_offsets("pg-analyze"), 1000)
+        .writeStream.foreachBatch(lambda df, batch_id: write_batch(df, batch_id, windows=False))
+        .queryName("analyze")
+        .option("checkpointLocation", f"{CHECKPOINT}/pg-analyze")
+        .trigger(processingTime=f"{ANALYZE_TRIGGER_SECONDS} seconds")
+        .start()
+    )
+    spark.sparkContext.setLocalProperty("spark.scheduler.pool", None)
     spark.streams.awaitAnyTermination()
 
 

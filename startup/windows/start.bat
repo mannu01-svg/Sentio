@@ -1,104 +1,69 @@
-# ---------------------------------------------------------------------------
-# One command to run the entire Sentio pipeline on Windows.
-#
-#   Double-click start.bat   (or run it from any terminal)
-#
-# Everything is automatic: docker, bootstrap (python env, npm, JDK, model
-# weights, demo user), spark, producer, api, dashboard. Just wait.
-#
-# Prerequisites (system apps — can't be auto-installed):
-#   Docker Desktop (running)  https://www.docker.com/products/docker-desktop/
-#   Node.js 18+               https://nodejs.org/
-#   Python 3.10-3.12          https://www.python.org/downloads/ (check "Add to PATH")
-#
-# Requires Windows 10+ with WSL2 enabled for Spark (Docker Desktop with
-# WSL2 backend covers this).
-# ---------------------------------------------------------------------------
 @echo off
-setlocal enabledelayedexpansion
-cd /d "%~dp0"
-rem repo root: this script lives in startup\windows\ — the project root is two levels up
-for %%i in ("%~dp0..\..") do set ROOT=%%~fi
-cd /d "%ROOT%"
+rem ---------------------------------------------------------------------------
+rem Sentio - start the whole stack in Docker (Windows).
+rem
+rem   Double-click start.bat, or from a terminal:
+rem     startup\windows\start.bat            full mode (VADER + DistilBERT + RoBERTa)
+rem     startup\windows\start.bat --fast     VADER only (lighter, quicker demo)
+rem     startup\windows\start.bat --fresh    wipe all data first (clean demo state)
+rem
+rem Only prerequisite: Docker Desktop, running. Python/Java/Node are NOT needed
+rem on Windows any more - everything runs inside containers.
+rem ---------------------------------------------------------------------------
+setlocal
+cd /d "%~dp0..\.."
 
-echo ===============================================
-echo  Sentio - one-command setup (Windows)
-echo ===============================================
-
-where docker >nul 2>nul || (echo [X] docker not found - install Docker Desktop and start it & pause & exit /b 1)
-docker info >nul 2>nul || (echo [X] docker daemon not running - start Docker Desktop first & pause & exit /b 1)
-where node >nul 2>nul || (echo [X] node.js not found - install node 18+ from nodejs.org & pause & exit /b 1)
-where python >nul 2>nul || (echo [X] python not found - install python 3.10-3.12 from python.org, check "Add to PATH" & pause & exit /b 1)
-
-if not exist "%ROOT%\.venv\Scripts\python.exe" (
-  echo [1/7] first run: creating python env + installing packages ~3-5 min...
-  python -m venv .venv || (echo [X] venv failed & pause & exit /b 1)
-  ".venv\Scripts\python.exe" -m pip install --quiet --upgrade pip
-  ".venv\Scripts\pip.exe" install --quiet -r requirements.txt || (echo [X] pip install failed & pause & exit /b 1)
-  echo       python env ready
-) else (
-  echo [1/7] python env already present
+set "FRESH="
+for %%a in (%*) do (
+  if /i "%%a"=="--fast" set "SKIP_BERT=1"
+  if /i "%%a"=="--fresh" set "FRESH=1"
 )
 
-if not exist "%ROOT%\frontend\node_modules" (
-  echo [2/7] npm install ~1-2 min...
-  pushd frontend
-  call npm install --no-audit --no-fund || (echo [X] npm install failed & popd & pause & exit /b 1)
-  popd
-  echo       frontend deps ready
-) else (
-  echo [2/7] node_modules already present
+echo ===============================================
+echo  Sentio - starting in Docker
+echo ===============================================
+
+where docker >nul 2>nul || (echo [X] Docker not found - install Docker Desktop: https://www.docker.com/products/docker-desktop/ & pause & exit /b 1)
+docker info >nul 2>nul || (echo [X] Docker Desktop is not running - start it and wait for "Engine running" & pause & exit /b 1)
+
+if defined FRESH (
+  echo [*] --fresh: removing containers and all stored data...
+  docker compose down -v
 )
+if defined SKIP_BERT echo [*] --fast: VADER only, transformer models skipped
 
-echo [3/7] starting kafka + postgres containers...
-docker rm -f sma-kafka sma-postgres >nul 2>nul
-docker compose up -d || (echo [X] docker compose failed & pause & exit /b 1)
+echo [1/3] Building and starting containers. First run downloads ~4 GB and takes 15-25 min...
+docker compose up -d --build
+if errorlevel 1 (echo [X] docker compose failed - see the messages above & pause & exit /b 1)
 
-echo       waiting for containers to be healthy...
+echo [2/3] Waiting for the API...
 set /a tries=0
-:waitloop
+:wait
 set /a tries+=1
-docker inspect -f "{{.State.Health.Status}}" sma-kafka 2>nul | findstr healthy >nul && docker inspect -f "{{.State.Health.Status}}" sma-postgres 2>nul | findstr healthy >nul && goto healthy
-if %tries% geq 90 (echo [X] containers not healthy - run: docker compose logs & pause & exit /b 1)
-timeout /t 2 /nobreak >nul
-goto waitloop
-:healthy
-echo       kafka + postgres healthy
+curl -fs http://localhost:8000/health >nul 2>nul && goto ready
+if %tries% geq 60 goto notready
+timeout /t 5 /nobreak >nul
+goto wait
 
-echo [4/7] kafka topics...
-docker exec sma-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic comments-raw --partitions 3 --if-not-exists >nul 2>nul
-docker exec sma-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic comments-scored --partitions 3 --if-not-exists >nul 2>nul
+:notready
+echo [!] The API is not answering yet - check: docker compose logs api
+goto summary
 
-echo [5/7] model warmup (one-time HF download ~5 min, skipped if cached)...
-if not exist "%USERPROFILE%\.cache\huggingface\hub\models--cardiffnlp--twitter-roberta-base-sentiment-latest" (
-  ".venv\Scripts\python.exe" scripts\warmup_models.py || echo       warmup failed - spark will retry on start
-) else (
-  echo       sentiment models already cached
-)
+:ready
+echo       API is up
 
-echo [6/7] login users (demo + admin)...
-".venv\Scripts\python.exe" scripts\seed_demo_user.py
-".venv\Scripts\python.exe" scripts\seed_admin.py
-
-echo [7/7] starting services (separate windows)...
-if not exist logs mkdir logs
-
-start "sentio-spark" /min cmd /c ""%~dp0run_spark.bat" > logs\spark.log 2>&1"
-start "sentio-producer" /min cmd /c '".venv\Scripts\python.exe" producer\producer.py --file data\raw\all_sources.csv --seed 6000 --shuffle > logs\producer.log 2>&1'
-start "sentio-api" /min cmd /c '".venv\Scripts\python.exe" -m uvicorn api.main:app --port 8000 > logs\api.log 2>&1'
-start "sentio-frontend" /min cmd /c "cd frontend && npm run dev > ..\logs\frontend.log 2>&1"
-
-echo       waiting for the API (~45 s)...
-timeout /t 45 /nobreak >nul
-
-echo ===============================================
+:summary
+echo [3/3] Containers:
+docker compose ps
 echo.
-echo   Dashboard:    http://localhost:5173
-echo   Login:        ada@sentio.app / secret123
-echo   API docs:     http://localhost:8000/docs
-echo   Spark UI:     http://localhost:4040
-echo.
-echo   Logs:         logs\spark.log producer.log api.log frontend.log
-echo   Stop all:     stop.bat
 echo ===============================================
+echo   Dashboard : http://localhost:5173   (admin@sentio.app / admin123)
+echo   Swagger   : http://localhost:8000/docs
+echo   Spark UI  : http://localhost:4040
+echo   MongoDB   : mongodb://localhost:27017   (database: sentio)
+echo.
+echo   Spark log : docker compose logs -f spark
+echo   Stop      : startup\windows\stop.bat
+echo ===============================================
+start "" http://localhost:5173
 pause

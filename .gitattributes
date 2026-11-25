@@ -1,0 +1,6 @@
+# Windows batch files need CRLF (cmd.exe labels/goto misbehave with LF);
+# shell scripts and everything copied into Linux containers need LF.
+*.bat   text eol=crlf
+*.sh    text eol=lf
+Dockerfile* text eol=lf
+docker/*    text eol=lf

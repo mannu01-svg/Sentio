@@ -9,6 +9,8 @@ import hashlib
 import secrets
 import sys
 
+import os
+
 import psycopg2
 
 
@@ -21,8 +23,9 @@ def _hash_password(password: str, salt: str | None = None) -> str:
 def main() -> int:
     try:
         conn = psycopg2.connect(
-            host="localhost", port=5432, dbname="sentiment",
-            user="sentiment", password="sentiment", connect_timeout=3,
+            host=os.getenv("PG_HOST", "localhost"), port=int(os.getenv("PG_PORT", "5432")),
+            dbname=os.getenv("PG_DB", "sentiment"), user=os.getenv("PG_USER", "sentiment"),
+            password=os.getenv("PG_PASSWORD", "sentiment"), connect_timeout=3,
         )
     except Exception as exc:
         print(f"  ⏭ postgres not reachable ({exc.__class__.__name__}) — user seeds on the next run")

@@ -24,7 +24,7 @@ pipeline {
             steps {
                 sh """
                     python3 -m venv ${VENV}
-                    ./${VENV}/bin/pip install -q kafka-python-ng vaderSentiment fastapi 'uvicorn[standard]' psycopg2-binary pandas httpx pytest pyarrow transformers torch --index-url https://pypi.org/simple
+                    ./${VENV}/bin/pip install -q kafka-python-ng vaderSentiment fastapi 'uvicorn[standard]' psycopg2-binary pandas httpx pytest pyarrow transformers torch 'pymongo==4.10.1' 'mongomock==4.3.0' setuptools --index-url https://pypi.org/simple
                 """
             }
         }
@@ -32,7 +32,7 @@ pipeline {
         stage("Lint") {
             steps {
                 sh """
-                    ${VENV}/bin/python -m compileall -q spark producer api evaluation
+                    ${VENV}/bin/python -m compileall -q spark producer api evaluation fetcher scripts docker
                 """
             }
         }

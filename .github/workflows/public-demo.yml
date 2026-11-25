@@ -96,6 +96,8 @@ jobs:
             --create --topic comments-raw --partitions 3 --if-not-exists || true
           docker exec sma-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
             --create --topic comments-scored --partitions 3 --if-not-exists || true
+          docker exec sma-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
+            --create --topic comments-analyze --partitions 3 --if-not-exists || true
 
       # ---- data plane: spark + producer ---------------------------------------
       - name: Start Spark streaming job

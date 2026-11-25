@@ -487,30 +487,36 @@ def pipeline():
     """Live pipeline counters: kafka offsets, spark window rate, db rows."""
     out: dict = {"stages": []}
 
-    # kafka offsets (raw in / scored out)
-    kafka_raw = kafka_scored = None
+    # kafka offsets (raw in / analyze in / scored out) — read with the Kafka
+    # client so it works both on the host and inside a container (the old
+    # `docker exec sma-kafka ...` call only worked from the host)
+    kafka_raw = kafka_analyze = kafka_scored = None
     try:
-        import subprocess
+        from kafka import KafkaConsumer, TopicPartition
 
-        def offset_sum(topic: str) -> int | None:
-            bins = "/opt/kafka/bin"
-            cmd = (
-                f"docker exec sma-kafka {bins}/kafka-get-offsets.sh "
-                f"--bootstrap-server localhost:9092 --topic {topic}"
-            )
-            res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
-            if res.returncode != 0:
-                return None
-            total = 0
-            for line in res.stdout.strip().splitlines():
-                try:
-                    total += int(line.rsplit(":", 1)[1])
-                except (ValueError, IndexError):
-                    continue
-            return total
+        consumer = KafkaConsumer(bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP", "localhost:9092"),
+                                 request_timeout_ms=6000, api_version_auto_timeout_ms=4000)
+        try:
+            def offset_sum(topic: str) -> int | None:
+                parts = consumer.partitions_for_topic(topic)
+                if not parts:
+                    return None
+                ends = consumer.end_offsets([TopicPartition(topic, p) for p in parts])
+                return int(sum(ends.values()))
 
-        kafka_raw = offset_sum("comments-raw")
-        kafka_scored = offset_sum("comments-scored")
+            kafka_raw = offset_sum("comments-raw")
+            kafka_analyze = offset_sum(os.getenv("KAFKA_ANALYZE_TOPIC", "comments-analyze"))
+            kafka_scored = offset_sum("comments-scored")
+        finally:
+            consumer.close()
+    except Exception:
+        pass
+
+    mongo = None
+    try:
+        import mongo_store
+
+        mongo = mongo_store.stats()
     except Exception:
         pass
 
@@ -537,11 +543,15 @@ def pipeline():
 
     out["stages"] = [
         {"name": "Kafka · comments-raw", "detail": "ingestion topic", "value": kafka_raw, "unit": "messages"},
+        {"name": "Kafka · comments-analyze", "detail": "your analyses (scored first)", "value": kafka_analyze, "unit": "messages"},
         {"name": "Kafka · comments-scored", "detail": "scored feed topic", "value": kafka_scored, "unit": "messages"},
         {"name": "Spark · throughput", "detail": "comments processed last minute", "value": per_min, "unit": "comments/min"},
         {"name": "Spark · windows", "detail": "1-min windows in last 30 min", "value": w["windows"], "unit": "windows"},
         {"name": "PostgreSQL · comments", "detail": "scored rows stored", "value": db_total, "unit": "rows"},
         {"name": "PostgreSQL · windowed", "detail": "comments in recent windows", "value": w["windowed_comments"], "unit": "comments"},
+        {"name": "MongoDB · raw_comments", "detail": "raw fetched comments (documents)",
+         "value": mongo["raw_comments"] if mongo else None, "unit": "documents"},
+        {"name": "MongoDB · analyses", "detail": "analysis documents", "value": mongo["analyses"] if mongo else None, "unit": "documents"},
     ]
     out["flow_per_min"] = per_min
     out["max_window"] = w["max_window"]
@@ -551,11 +561,17 @@ def pipeline():
 @app.get("/health")
 def health():
     try:
+        import mongo_store
+
+        mongodb = "up" if mongo_store.ping() else "down"
+    except Exception:
+        mongodb = "down"
+    try:
         with db() as conn, conn.cursor() as cur:
             cur.execute("SELECT 1")
-        return {"status": "ok", "database": "up"}
+        return {"status": "ok", "database": "up", "mongodb": mongodb}
     except Exception as exc:
-        return {"status": "degraded", "database": f"down: {exc}"}
+        return {"status": "degraded", "database": f"down: {exc}", "mongodb": mongodb}
 
 
 # ---------------------------------------------------------------------------
@@ -862,24 +878,44 @@ ANALYZED = AnalyzeStatus()
 def _record_history(kind: str, *, post_id: str | None = None, title: str | None = None,
                     platform: str | None = None, handle: str | None = None,
                     keyword: str | None = None, posts: list[str] | None = None,
-                    comments_published: int = 0, user_email: str | None = None):
-    """Persist every analysis into the history table (survives API restarts).
+                    comments_published: int = 0, user_email: str | None = None,
+                    request: dict | None = None):
+    """Persist every analysis into the history table (survives API restarts),
+    and store the full analysis document in MongoDB (mongo_store.analyses).
 
     user_email ties the analysis to the account that ran it — /api/history
     filters on it so every user only sees their own analyses."""
+    history_id = None
+    email = user_email.strip().lower() if user_email else None
     try:
         with db() as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO history (kind, post_id, title, platform, handle, keyword, posts, comments_published, user_email)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (kind, post_id, title, platform, handle, keyword,
-                 ",".join(posts) if posts else None, comments_published,
-                 user_email.strip().lower() if user_email else None),
+                 ",".join(posts) if posts else None, comments_published, email),
             )
+            history_id = cur.fetchone()["id"]
     except psycopg2.Error:
         pass  # history is best-effort — never block the analysis
+    try:
+        import mongo_store
+
+        all_posts = list(posts or [])
+        if post_id and post_id not in all_posts:
+            all_posts.append(post_id)
+        mongo_store.save_analysis({
+            "history_id": history_id, "kind": kind, "post_id": post_id, "title": title,
+            "platform": platform, "handle": handle, "keyword": keyword, "posts": all_posts,
+            "comments_published": comments_published, "user_email": email,
+            "request": request or {},
+        })
+    except Exception:
+        pass  # MongoDB is best-effort too
+    return history_id
 
 
 @app.get("/api/history")
@@ -945,6 +981,29 @@ def history(request: Request,
     return {"history": out, "count": len(out)}
 
 
+@app.get("/api/history/{entry_id}/document")
+def history_document(entry_id: int, request: Request, raw_limit: int = Query(50, ge=0, le=500)):
+    """The MongoDB side of an analysis: its stored document plus raw comments
+    exactly as fetched (before cleaning/scoring). Requires a valid Bearer token."""
+    session = _require_session(request, None)
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id, post_id, posts, user_email FROM history WHERE id = %s", (entry_id,))
+        entry = cur.fetchone()
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"No history entry {entry_id}")
+    if entry["user_email"] and entry["user_email"] != session["email"]:
+        raise HTTPException(status_code=403, detail="this analysis belongs to another account")
+    import mongo_store
+
+    doc = mongo_store.analysis_for_history(entry_id)
+    post_ids = [p for p in (entry["posts"] or "").split(",") if p]
+    if entry["post_id"] and entry["post_id"] not in post_ids:
+        post_ids.append(entry["post_id"])
+    raw = mongo_store.raw_comments_for(post_ids, limit=raw_limit) if raw_limit else []
+    return {"entry_id": entry_id, "mongodb": mongo_store.ping(), "analysis": doc,
+            "raw_comments": raw, "raw_count": len(raw)}
+
+
 @app.post("/api/history/{entry_id}/rehydrate")
 def history_rehydrate(entry_id: int, request: Request):
     """Re-score a history entry whose comments were lost from the pool.
@@ -981,6 +1040,28 @@ def history_rehydrate(entry_id: int, request: Request):
 
     published_total, healed_ids = 0, []
     now_iso = datetime.now().isoformat(timespec="seconds")
+
+    # MongoDB keeps the raw comments every analysis fetched: republish those
+    # first (exact same ids/text, no network fetch, works even if the platform
+    # has since removed them). Fall back to re-fetching only if none are stored.
+    try:
+        import mongo_store
+
+        stored = mongo_store.raw_comments_for(stored_ids)
+    except Exception:
+        stored = []
+    if stored:
+        sent = publisher.publish_comments(stored, store_raw=False)
+        return {
+            "status": "ok",
+            "entry_id": entry_id,
+            "kind": kind,
+            "comments_published": sent,
+            "healed_ids": sorted({c["post_id"] for c in stored if c.get("post_id")}),
+            "source": "mongodb",
+            "note": f"Re-published {sent} stored raw comments from MongoDB -> Kafka -> Spark; "
+                    "scores appear in a few seconds",
+        }
 
     if kind == "post" and platform == "youtube":
         # re-fetch each stored video's comments via yt-dlp, SAME post_id
@@ -1151,6 +1232,7 @@ def analyze(req: AnalyzeRequest, request: Request):
         posts=[result["post_id"]],
         comments_published=sent,
         user_email=req.user_email,
+        request={"url": req.url if req.mode != "paste" else None, "mode": req.mode, "limit": req.limit},
     )
     return {
         "status": "ok",

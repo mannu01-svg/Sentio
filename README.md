@@ -30,14 +30,15 @@ through an interactive dashboard — entirely on your localhost.
 
 ## What is Sentio?
 
-Six services work together:
+Eight services work together, all in Docker:
 
 | Service | What it does |
 |---|---|
 | **Producer** | Replays real comment datasets into Kafka as a simulated live stream (seed + on-demand bursts). |
-| **Kafka** | Message bus holding raw (`comments-raw`) and scored (`comments-scored`) comment streams. |
+| **Kafka** | Message bus: `comments-raw` (replay stream), `comments-analyze` (your analyses, scored first) and `comments-scored` (live feed). |
 | **Spark Streaming** | Consumes raw comments, cleans text, scores sentiment with **VADER + DistilBERT + RoBERTa**, builds 1-minute aggregates. |
 | **PostgreSQL** | Stores every scored comment + window stats + users + analysis history. |
+| **MongoDB** | Document store for raw data: every fetched comment exactly as the platform returned it (`raw_comments`) and one document per analysis (`analyses`). "Re-score" republishes from here without re-fetching. |
 | **FastAPI** | 30+ REST endpoints: summaries, timelines, trends, keyword search, URL analysis, CSV export. |
 | **React dashboard** | The app you interact with: 8 tabs, live charts, KPIs, deep links. |
 
@@ -50,44 +51,38 @@ will fetch its real comments (via `yt-dlp` / PullPush) and push them through the
 
 | Requirement | Version | Where to get it |
 |---|---|---|
-| **Docker Desktop** | any recent | [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) |
-| **Node.js** | 18 or newer | [nodejs.org](https://nodejs.org/) (LTS is fine) |
-| **Python** | 3.10 – 3.12 | [python.org](https://www.python.org/downloads/) (macOS: `brew install python@3.12`; Windows: check "Add to PATH" in installer) |
-| **Java 17** | 17.x | **auto-downloaded by the startup script** — no action needed unless you already have a JDK |
-| ~6 GB free RAM | — | Kafka + Postgres containers + Spark + models |
-| ~4 GB disk | — | Python env, node_modules, model weights, datasets |
+| **Docker Desktop** | any recent (WSL 2 backend on Windows) | [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) |
+| ~8 GB RAM for Docker | — | Kafka + PostgreSQL + MongoDB + Spark with two transformer models |
+| ~10 GB disk | — | images (~4 GB), models (~750 MB), data |
 
-> **Windows note:** just double-click **`startup/windows/start.bat`** — no WSL/Git Bash needed.
-> (Power users can also run `startup/linux/start.sh` inside WSL2 if they prefer a bash environment.)
+That's all. **Python, Java, Node.js and the ML models run inside containers**, so the same
+command works on Windows, macOS (Intel and Apple Silicon) and Linux.
 
-Everything else (Python packages, npm packages, JDK, sentiment models, datasets) is installed
-**automatically** on first run.
+> **Windows:** Docker Desktop gives containers half your RAM by default. On a 16 GB PC that is
+> enough. With 8 GB, start in `--fast` mode, or raise the limit in `%UserProfile%\.wslconfig`:
+> `[wsl2]` then `memory=6GB`, then `wsl --shutdown` and restart Docker Desktop.
 
 ---
 
 ## Quickstart
 
-**One command per platform — everything (installs, infra, services, Jenkins CI) is automatic:**
+| Platform | Command |
+|---|---|
+| **Windows** | double-click **`startup\windows\start.bat`** (or run it from a terminal) |
+| **macOS** | `bash startup/mac/start.sh` |
+| **Linux** | `bash startup/linux/start.sh` |
+| **Any** | `docker compose up -d --build` |
 
-| Platform | Command | Notes |
-|---|---|---|
-| **Linux** | `startup/linux/setup.sh` | the reference implementation |
-| **macOS** | `startup/mac/setup.sh` | identical — Intel & Apple Silicon (JDK auto-download picks the right build; `brew install python@3.12` if needed) |
-| **Windows** | double-click **`startup/windows/setup.bat`** | or run from any terminal; `stop.bat` stops everything |
-
-Prerequisites (system apps, can't be auto-installed): **Docker Desktop** (running),
-**Node.js 18+**, **Python 3.10–3.12**. Everything else is installed automatically.
+The first run builds the images and downloads the sentiment models (**~4 GB, 15–25 min**);
+later starts take under a minute. `setup.sh` / `setup.bat` do the same and then also start
+**Jenkins CI** (see [Jenkins CI](#jenkins-ci-one-command-demo-on-your-own-machine)).
 
 ### No machine? Run the live demo from GitHub Actions
 
-The repo ships a **Public demo** workflow (`.github/workflows/public-demo.yml`) —
-it boots the entire stack (Kafka + Spark + PostgreSQL + API + nginx + cloudflared)
-on a GitHub runner and prints a **live public URL + demo credentials** in the job summary:
+The repo ships a **Public demo** workflow (`.github/workflows/public-demo.yml`) that boots the
+stack on a GitHub runner and prints a **live public URL + demo credentials** in the job summary:
 
 > **Actions tab → "Public demo" → Run workflow** (~10 min to boot, live for up to ~6h)
-
-Runs are ephemeral (fresh DB each run, free on a public repo). Optional: set a repo
-secret `ADMIN_PASSWORD` for a known admin password on the demo.
 
 ### 1. Clone
 
@@ -96,42 +91,44 @@ git clone https://github.com/mannu01-svg/Sentio.git
 cd Sentio
 ```
 
-### 2. Setup + run (single command)
+### 2. Start
 
 ```bash
-bash startup/linux/setup.sh    # Linux
-bash startup/mac/setup.sh      # macOS
-startup/windows/setup.bat      # Windows (double-click, or run from a terminal)
+startup/windows/start.bat          # Windows
+bash startup/mac/start.sh          # macOS (same script in startup/linux/)
 ```
 
-That's it. The first run does everything automatically (~15–20 min on decent internet, mostly one-time):
+What runs (`docker compose ps`):
 
-- creates a Python virtualenv + installs all packages
-- `npm install` for the frontend
-- downloads JDK 17 to `~/.tools/jdk-17` (no admin rights needed; skipped if you have Java — brew openjdk works)
-- rejoins the fine-tuned model weights from committed chunks
-- downloads the two HuggingFace sentiment models (one-time, ~5 min)
-- starts Kafka + PostgreSQL containers, creates topics, seeds the DB
-- seeds a **demo login user** (below)
-- starts Spark, producer, API, and dashboard, then verifies every service
-- starts **Jenkins CI** zero-click (below): admin user + `sentio-ci` pipeline job + first build queued automatically
+| Container | Role |
+|---|---|
+| `kafka`, `kafka-init` | broker + one-shot topic creation |
+| `postgres` | scored comments, windows, users, history |
+| `mongodb` | raw comments + analysis documents |
+| `models` | one-shot download of DistilBERT + RoBERTa into a volume (first run only) |
+| `spark` | streaming job: replay query + analyze query |
+| `api` | FastAPI on :8000 (also seeds the demo/admin logins) |
+| `producer` | seeds 6,000 comments, then waits for "Go live" bursts |
+| `frontend` | React dashboard served by nginx on :5173 (proxies `/api` and `/docs`) |
 
-Just want the app without Jenkins? Use `start.sh` / `start.bat` instead of `setup.sh` / `setup.bat`.
-
-**Variants (Linux/macOS):**
+**Variants:**
 
 ```bash
-startup/linux/start.sh --fast     # skip transformer models — quick demo (VADER only)
-startup/linux/start.sh --fresh    # wipe DB + checkpoints for a clean demo state
-startup/linux/stop.sh             # stop everything (data is kept)
+start.bat --fast        |  start.sh --fast       # VADER only: lighter, quicker demo
+start.bat --fresh       |  start.sh --fresh      # wipe all data for a clean demo state
+stop.bat                |  stop.sh               # stop (data kept)
+docker compose logs -f spark                     # watch comments being scored
 ```
 
-**Laptops with 16GB RAM:** lower Spark's footprint before starting (optional):
+**Bigger machine (Docker has 10+ GB):** score faster with more Spark workers:
 
 ```bash
-export SPARK_MASTER=local[4] SPARK_DRIVER_MEMORY=2g   # Linux/macOS
-set SPARK_MASTER=local[4] && set SPARK_DRIVER_MEMORY=2g   # Windows
+set SPARK_MASTER=local[4]& set NLP_TORCH_THREADS=4& startup\windows\start.bat   # Windows
+SPARK_MASTER=local[4] NLP_TORCH_THREADS=4 bash startup/mac/start.sh            # macOS/Linux
 ```
+
+**Without Docker** (development only): `startup/*/run_spark.sh` and the old native flow still
+work with Python 3.12 + Java 17 installed, plus a local MongoDB (optional: Sentio runs without it).
 
 ### 3. Open the app
 
@@ -143,8 +140,14 @@ When the start script finishes it prints a status box. Then open:
 | http://localhost:8000/docs | interactive API docs (Swagger) |
 | http://localhost:4040 | Spark streaming UI (while Spark runs) |
 
-**Demo login:** `ada@sentio.app` / `secret123` — or create your own account on the login page
-(signup is instant, stored in Postgres).
+**Logins:** `admin@sentio.app` / `admin123` (admin) or `ada@sentio.app` / `secret123` (demo user),
+or create an account on the login page (an admin approves it in Settings).
+
+| More URLs | What |
+|---|---|
+| http://localhost:5173/docs | Swagger through the nginx proxy |
+| mongodb://localhost:27017 | MongoDB (open with MongoDB Compass; database `sentio`) |
+| localhost:5432 | PostgreSQL (`sentiment` / `sentiment`) |
 
 ### What you should see within a minute
 
@@ -301,17 +304,17 @@ requested handle or keyword. YouTube works fully in real time via `yt-dlp`.
 ## Architecture
 
 ```
- datasets (Kaggle CSVs, 274k rows)
-        │
-        ▼
- producer.py ──seed + live bursts──►  Kafka  comments-raw (3 partitions)
-                                          │
-                                          ▼
-                            Spark Structured Streaming (local[8])
-                            ├── JSON parse + clean text (URLs, emoji, HTML, case)
-                            ├── VADER scoring            (pandas UDF)
-                            ├── DistilBERT + RoBERTa     (mapInPandas, batched, warm models)
-                            └── 1-minute window aggregates
+ datasets (Kaggle CSVs, 274k rows)              Analyze page / accounts / topics / Re-score
+        │                                                 │  (FastAPI fetches YouTube / Reddit ...)
+        ▼                                                 ├──────────────► MongoDB
+ producer ──seed + live bursts──► Kafka comments-raw      │                raw_comments · analyses
+                                          │               ▼
+                                          │       Kafka comments-analyze
+                                          ▼               ▼
+                     Spark Structured Streaming — two queries, FAIR scheduler pools
+                     ├── replay query  (comments-raw, trigger 10 s, feeds live windows)
+                     └── analyze query (comments-analyze, trigger 3 s, scored first)
+                         clean text → VADER → DistilBERT + RoBERTa
                                           │
                 ┌─────────────────────────┴──────────────────────┐
                 ▼                                                ▼
@@ -320,11 +323,19 @@ requested handle or keyword. YouTube works fully in real time via `yt-dlp`.
                 │                                                │
                 └───────────────────────┬────────────────────────┘
                                         ▼
-                            FastAPI :8000 (30+ endpoints)
-                                        ▲ poll every ~3 s
-                                        │
-                            React dashboard :5173
+                     FastAPI :8000 (30+ endpoints, Swagger at /docs)
+                                        ▲
+                     nginx :5173 ── React dashboard
 ```
+
+**Why two stores:** PostgreSQL holds what Spark computes and what must be relational (scores,
+windows, users, the history list). MongoDB holds documents: raw comments exactly as fetched and
+one record per analysis (request, posts, counts, `history_id` link). `GET /api/history/{id}/document`
+returns both sides of an analysis; "Re-score" republishes the stored raw comments.
+
+**Why two Spark queries:** user analyses used to share `comments-raw` with the 6,000-comment
+seed, so they waited minutes behind it ("scoring pending…"). Their own topic and query, in their
+own FAIR scheduler pool, gets them scored within seconds.
 
 **Delivery semantics:** every sink upserts by primary key (`comments.id`, `window_stats.window_start`),
 so producer replays and Spark restarts are always safe — no duplicates, ever.
@@ -344,6 +355,8 @@ Full interactive docs at **http://localhost:8000/docs**. Highlights:
 | `GET /api/words` | trending words + velocity |
 | `GET /api/compare` | VADER vs DistilBERT vs RoBERTa agreement stats |
 | `GET /api/history` | your analysis log with live sentiment per entry |
+| `GET /api/history/{id}/document` | the MongoDB side of an analysis: stored document + raw comments as fetched |
+| `POST /api/history/{id}/rehydrate` | Re-score: republish stored raw comments from MongoDB (re-fetch only if none) |
 | `POST /api/analyze` | fetch + score a YouTube/Reddit URL |
 | `POST /api/analyze-account` | analyze an account/handle |
 | `POST /api/keyword-search` | search a keyword across all sources |
@@ -353,7 +366,8 @@ Full interactive docs at **http://localhost:8000/docs**. Highlights:
 | `GET /api/alerts` | volume-spike alerts |
 | `GET /api/export` | CSV export of scored comments |
 | `GET /api/spam` · `/api/comments/{id}/spam` | spam analysis |
-| `GET /health` | liveness probe |
+| `GET /api/pipeline` | stage counters: Kafka topics, Spark throughput, PostgreSQL, MongoDB |
+| `GET /health` | liveness probe (PostgreSQL + MongoDB status) |
 
 ---
 
@@ -380,43 +394,31 @@ Everything works with defaults. Optional overrides (create `.env.local` — giti
 
 ## Troubleshooting
 
-**The start script prints red for Spark** → `tail -100 logs/spark.log`. After an unclean shutdown,
-Spark occasionally wedges (`py4j ... Received empty command`). Fix:
+**History says "scoring pending…" for a long time** → Spark isn't scoring. Check
+`docker compose logs --tail 80 spark`. The Pipeline tab shows whether `Kafka · comments-analyze`
+grows while `PostgreSQL · comments` doesn't. Spark restarts automatically; after a crash loop:
 
 ```bash
-startup/linux/stop.sh
-pkill -9 -f pyspark.daemon
-rm -rf checkpoints
-startup/linux/start.sh
+docker compose rm -sf spark && docker volume rm sentio_checkpoints && docker compose up -d spark
 ```
 
-**Containers won't start / port 5432 or 9092 busy** → a stale container or process holds the port:
+**`spark` container keeps restarting / exit code 137** → Docker is out of memory: start with
+`--fast`, or give Docker more RAM (see [Requirements](#requirements)).
 
-```bash
-docker rm -f sma-kafka sma-postgres
-startup/linux/start.sh
-```
+**First build fails with a network error** (`no such host`, `timeout`) → re-run the same command;
+finished layers are kept. On flaky Wi-Fi set Docker Desktop → Settings → Docker Engine →
+`"dns": ["8.8.8.8", "1.1.1.1"]`.
 
-**Dashboard empty after start** → the seed pass takes ~40 s to score; watch `logs/spark.log`
-for `[Stage…]` progress, or press **Go Live** to force traffic.
+**Port already in use** (5173, 8000, 5432, 27017, 9092, 4040) → another program uses it. Change the
+left-hand number in `docker-compose.yml`, e.g. `"5433:5432"`.
 
-**`docker not found` / `node not found`** → install Docker Desktop and Node.js first
-(see [Requirements](#requirements)); these are system apps and can't be pip-installed.
+**Model download failed** → Spark still scores with VADER. Fix the network, then
+`docker compose up models` and `docker compose restart spark`.
 
-**Model download fails / HF warnings** → rerun `.venv/bin/python scripts/warmup_models.py`,
-or just restart — Spark retries downloads on start.
+**MongoDB down** → analyses still run (MongoDB is best-effort); Re-score falls back to re-fetching.
+`/health` shows `"mongodb": "down"`.
 
-**Fresh demo state** → `startup/linux/start.sh --fresh` truncates the DB and resets checkpoints.
-
-**Nuclear option** (wipes data, rebuilds infra):
-
-```bash
-startup/linux/stop.sh
-docker rm -f sma-kafka sma-postgres
-docker volume rm sentiment_pgdata 2>/dev/null
-rm -rf checkpoints
-startup/linux/start.sh
-```
+**Fresh demo state** → `start.bat --fresh` / `start.sh --fresh` (deletes all data volumes).
 
 ---
 
@@ -472,7 +474,9 @@ models/training/            prepare_data.py · finetune.py · split_weights.py
 evaluation/evaluate.py      accuracy / F1 / confusion matrices vs dataset labels
 data/raw/                   7 Kaggle datasets, 274k rows total
 db/init.sql                 Postgres schema (comments · users · history · window_stats)
-docker-compose.yml          Kafka (KRaft) + PostgreSQL, healthchecks
+docker-compose.yml          whole stack: Kafka, PostgreSQL, MongoDB, Spark, API, producer, nginx
+docker/                     Dockerfile.app (Python 3.12 + Java 17), Dockerfile.frontend, nginx.conf
+fetcher/mongo_store.py      MongoDB document store (raw comments, analyses)
 startup/linux/               setup.sh · start.sh · stop.sh · run_spark.sh · bootstrap.sh
 startup/mac/                 same scripts (identical, macOS-safe)
 startup/windows/             setup.bat · start.bat · stop.bat · run_spark.bat (double-click)

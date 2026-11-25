@@ -248,12 +248,14 @@ YTDLP_BIN = None
 
 
 def _ytdlp_bin() -> str:
+    """yt-dlp from the project venv (macOS/Linux bin/, Windows Scripts\\), else PATH (Docker)."""
     global YTDLP_BIN
     if YTDLP_BIN is None:
-        candidate = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".venv", "bin", "yt-dlp"
-        )
-        YTDLP_BIN = candidate if os.path.exists(candidate) else "yt-dlp"
+        import shutil
+
+        venv = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".venv")
+        candidates = [os.path.join(venv, "bin", "yt-dlp"), os.path.join(venv, "Scripts", "yt-dlp.exe")]
+        YTDLP_BIN = next((c for c in candidates if os.path.exists(c)), None) or shutil.which("yt-dlp") or "yt-dlp"
     return YTDLP_BIN
 
 
