@@ -1579,7 +1579,7 @@ class KeywordSearchRequest(BaseModel):
 
 
 @app.post("/api/keyword-search")
-def keyword_search(req: KeywordSearchRequest):
+def keyword_search(req: KeywordSearchRequest, request: Request):
     """Search a working platform for a keyword and stream every matching comment.
 
     youtube: real yt-dlp search for the keyword -> comments of the top videos (live fetch)
@@ -1588,7 +1588,7 @@ def keyword_search(req: KeywordSearchRequest):
     req_model = TopicStreamRequest(
         topic=req.keyword, source=req.platform, limit=req.limit, user_email=req.user_email
     )
-    return topics_stream(req_model)
+    return topics_stream(req_model, request)
 
 
 # ---------------------------------------------------------------------------

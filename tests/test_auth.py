@@ -183,3 +183,25 @@ def test_account_scoped_gets_require_token():
         headers={"Authorization": f"Bearer {token}"},
     )
     assert res.status_code == 403
+
+
+@requires_db
+def test_keyword_search_requires_token():
+    """Regression: keyword_search re-wrapped topics_stream without passing
+    the new `request` argument -> TypeError 500 on every keyword search."""
+    token = _seed_admin()
+    email = TEST_ADMIN_EMAIL
+    res = client.post(
+        "/api/keyword-search",
+        json={"platform": "x", "keyword": "python", "limit": 5, "user_email": email},
+    )
+    assert res.status_code == 401
+    res = client.post(
+        "/api/keyword-search",
+        json={"platform": "x", "keyword": "python", "limit": 5, "user_email": email},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert res.status_code == 200, res.text[:200]
+    body = res.json()
+    # no matching pool rows is a graceful error, not a 500
+    assert body.get("status") in ("ok", "error")
