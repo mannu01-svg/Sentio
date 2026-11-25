@@ -1,11 +1,14 @@
-# Sentio public demo — one click runs the entire stack on a GH runner and
-# exposes it on the internet via a cloudflared quick tunnel.
+# Sentio public demo (cloud deployment, no card, no server to rent).
 #
-#   Actions tab -> "Public demo" -> Run workflow
+#   GitHub -> Actions -> "Public demo" -> Run workflow
 #
-# The public URL + demo credentials are printed in the job summary.
-# Runs are ephemeral: up to ~6h (GitHub hard cap), fresh DB each run.
-# Free on a public repo.
+# A GitHub-hosted cloud VM (4 vCPU, 16 GB RAM) builds and runs the SAME
+# docker-compose.yml used on the laptop - Kafka, Spark, PostgreSQL, MongoDB,
+# API, nginx - then publishes it over HTTPS through a Cloudflare quick tunnel.
+# The public https:// URL and logins appear in the run's Summary page.
+#
+# Runs are ephemeral: up to ~6 h (GitHub's job limit), fresh data every run.
+# Start it ~25 minutes before the demo: building and starting takes ~15-20 min.
 
 name: Public demo
 
@@ -13,9 +16,14 @@ on:
   workflow_dispatch:
     inputs:
       keep_alive_minutes:
-        description: "Keep the demo alive (minutes, max 350)"
+        description: "Keep the demo alive (minutes, max 330)"
         required: false
-        default: "350"
+        default: "300"
+      fast_mode:
+        description: "Fast mode: VADER only, skip the transformer models (starts faster)"
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: public-demo
@@ -24,180 +32,94 @@ concurrency:
 jobs:
   demo:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 355
+
+    env:
+      SKIP_BERT: ${{ inputs.fast_mode && '1' || '' }}
+      SPARK_MASTER: "local[3]"
+      NLP_TORCH_THREADS: "2"
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Show runner specs
+      - name: Runner specs
         run: |
-          echo "cores: $(nproc)  ram: $(free -g | awk '/^Mem:/{print $2}')GB"
-          echo "docker: $(docker --version)"
+          echo "cores: $(nproc)  ram: $(free -g | awk '/^Mem:/{print $2}') GB  disk free: $(df -h / | awk 'NR==2{print $4}')"
+          docker --version; docker compose version
 
-      # ---- caches (first run ~12 min, later runs ~5 min) ---------------------
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+      - name: Build images
+        run: docker compose build
 
-      - name: Cache npm
-        uses: actions/cache@v4
-        with:
-          path: frontend/.npm
-          key: npm-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
-
-      - name: Cache HuggingFace sentiment models
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-sentio-${{ runner.os }}-v1
-
-      # ---- python env --------------------------------------------------------
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install python deps
+      # ---- start the whole stack ------------------------------------------------
+      - name: Start Sentio (docker compose)
         run: |
-          python -m venv .venv
-          .venv/bin/pip install --quiet --upgrade pip
-          .venv/bin/pip install --quiet -r requirements.txt
-
-      # ---- frontend build ------------------------------------------------------
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Build frontend
-        working-directory: frontend
-        run: |
-          npm ci --cache .npm --prefer-offline
-          npm run build
-
-      # ---- infra: kafka + postgres (prod compose — same project as nginx,
-      #      so the nginx step can join without container/port conflicts) -----
-      - name: Start kafka + postgres
-        run: |
-          docker compose -f deploy/docker-compose.prod.yml up -d kafka postgres
-          for i in $(seq 1 90); do
-            K=$(docker inspect -f '{{.State.Health.Status}}' sma-kafka 2>/dev/null || echo none)
-            P=$(docker inspect -f '{{.State.Health.Status}}' sma-postgres 2>/dev/null || echo none)
-            [ "$K" = "healthy" ] && [ "$P" = "healthy" ] && break
-            sleep 2
+          docker compose up -d
+          echo "waiting for the API and dashboard..."
+          for i in $(seq 1 150); do
+            curl -sf http://localhost:5173/health > /dev/null && break
+            sleep 4
           done
-          docker ps --format '{{.Names}}: {{.Status}}'
+          docker compose ps
+          curl -s http://localhost:5173/health; echo
 
-      - name: Seed users + topics
-        run: |
-          .venv/bin/python scripts/seed_demo_user.py
-          ADMIN_PASSWORD="${{ secrets.ADMIN_PASSWORD }}" .venv/bin/python scripts/seed_admin.py
-          docker exec sma-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
-            --create --topic comments-raw --partitions 3 --if-not-exists || true
-          docker exec sma-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
-            --create --topic comments-scored --partitions 3 --if-not-exists || true
-          docker exec sma-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
-            --create --topic comments-analyze --partitions 3 --if-not-exists || true
-
-      # ---- data plane: spark + producer ---------------------------------------
-      - name: Start Spark streaming job
+      # ---- public HTTPS URL: Cloudflare quick tunnel -> nginx -------------------
+      - name: Open HTTPS tunnel
         run: |
           mkdir -p logs
-          # JDK 17 for Spark (runner has it on PATH; make sure JAVA_HOME points at it)
-          JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(which java)")")")"
-          echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
-          nohup env JAVA_HOME="$JAVA_HOME" bash startup/linux/run_spark.sh > logs/spark.log 2>&1 &
-          sleep 5
-          tail -5 logs/spark.log || true
-
-      - name: Start producer (seed pass, then idle for Go-live bursts)
-        run: |
-          nohup .venv/bin/python producer/producer.py --file data/raw/all_sources.csv --seed 4000 --shuffle > logs/producer.log 2>&1 &
-
-      # ---- app: API + nginx edge ----------------------------------------------
-      - name: Start API + nginx
-        run: |
-          nohup .venv/bin/uvicorn api.main:app --host 0.0.0.0 --port 8000 > logs/api.log 2>&1 &
-          for i in $(seq 1 30); do
-            curl -sf http://localhost:8000/health > /dev/null && break
-            sleep 2
-          done
-          curl -s http://localhost:8000/health
-          bash deploy/gen-certs.sh
-          # nginx joins the same compose project (kafka/postgres already up)
-          docker compose -f deploy/docker-compose.prod.yml up -d --build nginx
-          sleep 3
-          curl -sk -o /dev/null -w "nginx https: %{http_code}\n" https://localhost/
-
-      # ---- public URL: cloudflared quick tunnel --------------------------------
-      - name: Start cloudflared tunnel
-        run: |
           curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i /tmp/cloudflared.deb
-          nohup cloudflared tunnel --url https://localhost:443 --no-tls-verify --logfile logs/cloudflared.log > /dev/null 2>&1 &
+          sudo dpkg -i /tmp/cloudflared.deb > /dev/null
+          nohup cloudflared tunnel --url http://localhost:5173 --logfile logs/cloudflared.log > /dev/null 2>&1 &
           for i in $(seq 1 30); do
             URL=$(grep -oE "https://[a-z0-9-]+\.trycloudflare\.com" logs/cloudflared.log 2>/dev/null | head -1)
             [ -n "$URL" ] && break
             sleep 2
           done
-          [ -n "$URL" ] || { echo "tunnel failed"; exit 1; }
+          [ -n "$URL" ] || { echo "tunnel failed"; cat logs/cloudflared.log; exit 1; }
           echo "PUBLIC_URL=$URL" >> "$GITHUB_ENV"
-          # quick-tunnel URLs take a few seconds to become routable on the
-          # edge — poll until the dashboard answers through the tunnel
           for i in $(seq 1 30); do
-            CODE=$(curl -s -o /dev/null -w "%{http_code}" --retry 3 --retry-connrefused --retry-delay 3 "$URL/" 2>/dev/null || echo 000)
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL/login" || echo 000)
             [ "$CODE" = "200" ] && break
             sleep 3
           done
-          echo "tunnel routable: $URL -> $CODE"
+          echo "tunnel: $URL -> HTTP $CODE"
 
-      # ---- publish the demo URL FIRST (verify must never hide it) -------------
-      - name: Write demo URL to job summary
+      - name: Publish the demo URL (Summary page)
         run: |
           {
-            echo "# 🟢 Sentio demo is LIVE"
+            echo "# 🟢 Sentio is live"
             echo
-            echo "**Public URL:** $PUBLIC_URL"
+            echo "## $PUBLIC_URL"
             echo
             echo "| | |"
             echo "|---|---|"
-            echo "| Admin login | \`admin@sentio.app\` |"
-            if [ -n "${{ secrets.ADMIN_PASSWORD }}" ]; then
-              echo "| Admin password | repo secret \`ADMIN_PASSWORD\` |"
-            else
-              echo "| Admin password | \`admin123\` (default) |"
-            fi
+            echo "| Admin | \`admin@sentio.app\` / \`admin123\` |"
             echo "| Demo user | \`ada@sentio.app\` / \`secret123\` |"
+            echo "| Swagger | $PUBLIC_URL/docs |"
+            echo "| Mode | ${SKIP_BERT:+fast (VADER only)}${SKIP_BERT:-full (VADER + DistilBERT + RoBERTa)} |"
             echo
-            echo "Signup → pending → admin approves (Settings → User Management) → sign in."
-            echo
-            echo "This demo dies when the job ends (~${{ inputs.keep_alive_minutes || '350' }} min). Re-run for a new URL."
+            echo "Runs on a GitHub-hosted VM with Docker Compose (Kafka, Spark, PostgreSQL, MongoDB, FastAPI, nginx)."
+            echo "HTTPS is terminated by Cloudflare. The demo ends when this job ends (~${{ inputs.keep_alive_minutes || '300' }} min) - cancel the run to stop it early."
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "PUBLIC URL: $PUBLIC_URL"
 
-      # ---- verify (non-fatal: a flaky check must never kill a live demo) ------
-      - name: Verify demo end-to-end
+      - name: Smoke test through the public URL
         continue-on-error: true
         run: |
-          echo "public URL: $PUBLIC_URL"
-          curl -s -o /dev/null -w "dashboard: %{http_code}\n" \
-            --retry 10 --retry-connrefused --retry-delay 3 --retry-all-errors "$PUBLIC_URL/"
-          curl -s --retry 5 --retry-connrefused --retry-delay 3 --retry-all-errors \
-            "$PUBLIC_URL/api/summary" | head -c 200; echo
-          # deterministic check: the always-seeded demo user (ADMIN_PASSWORD may
-          # be an unset secret — the seeded admin password would be random)
-          curl -s --retry 5 --retry-connrefused --retry-delay 3 --retry-all-errors \
-            -X POST "$PUBLIC_URL/api/login" -H 'Content-Type: application/json' \
+          curl -s "$PUBLIC_URL/health"; echo
+          curl -s -X POST "$PUBLIC_URL/api/login" -H 'Content-Type: application/json' \
             -d '{"email":"ada@sentio.app","password":"secret123"}' | head -c 120; echo
+          curl -s "$PUBLIC_URL/api/summary" | head -c 200; echo
 
-      # ---- keep alive ----------------------------------------------------------
       - name: Keep demo alive
-        timeout-minutes: 355
+        timeout-minutes: 335
         run: |
-          echo "demo stays up — cancel the job to end it early"
-          END=$((SECONDS + ${{ inputs.keep_alive_minutes || 350 }} * 60))
+          echo "demo is up at $PUBLIC_URL - cancel the run to end it"
+          END=$((SECONDS + ${{ inputs.keep_alive_minutes || 300 }} * 60))
           while [ $SECONDS -lt $END ]; do
-            sleep 60
-            curl -sf -o /dev/null http://localhost:8000/health || echo "health: api down"
-            curl -sf -o /dev/null "https://localhost/" -k || true
+            sleep 120
+            curl -sf -o /dev/null http://localhost:5173/health || { echo "health check failed"; docker compose ps; }
           done
-          echo "keep-alive window over — demo ends"
+
+      - name: Container logs (on failure)
+        if: failure()
+        run: docker compose logs --tail 80
