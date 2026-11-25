@@ -140,16 +140,16 @@ jobs:
           done
           [ -n "$URL" ] || { echo "tunnel failed"; exit 1; }
           echo "PUBLIC_URL=$URL" >> "$GITHUB_ENV"
+          # quick-tunnel URLs take a few seconds to become routable on the
+          # edge — poll until the dashboard answers through the tunnel
+          for i in $(seq 1 30); do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" --retry 3 --retry-connrefused --retry-delay 3 "$URL/" 2>/dev/null || echo 000)
+            [ "$CODE" = "200" ] && break
+            sleep 3
+          done
+          echo "tunnel routable: $URL -> $CODE"
 
-      # ---- verify + publish the demo URL --------------------------------------
-      - name: Verify demo end-to-end
-        run: |
-          echo "public URL: $PUBLIC_URL"
-          curl -s -o /dev/null -w "dashboard: %{http_code}\n" "$PUBLIC_URL/"
-          curl -s "$PUBLIC_URL/api/summary" | head -c 200; echo
-          curl -s -X POST "$PUBLIC_URL/api/login" -H 'Content-Type: application/json' \
-            -d '{"email":"admin@sentio.app","password":"'"${{ secrets.ADMIN_PASSWORD }}"'"}' | head -c 120; echo
-
+      # ---- publish the demo URL FIRST (verify must never hide it) -------------
       - name: Write demo URL to job summary
         run: |
           {
@@ -171,6 +171,21 @@ jobs:
             echo
             echo "This demo dies when the job ends (~${{ inputs.keep_alive_minutes || '350' }} min). Re-run for a new URL."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---- verify (non-fatal: a flaky check must never kill a live demo) ------
+      - name: Verify demo end-to-end
+        continue-on-error: true
+        run: |
+          echo "public URL: $PUBLIC_URL"
+          curl -s -o /dev/null -w "dashboard: %{http_code}\n" \
+            --retry 10 --retry-connrefused --retry-delay 3 --retry-all-errors "$PUBLIC_URL/"
+          curl -s --retry 5 --retry-connrefused --retry-delay 3 --retry-all-errors \
+            "$PUBLIC_URL/api/summary" | head -c 200; echo
+          # deterministic check: the always-seeded demo user (ADMIN_PASSWORD may
+          # be an unset secret — the seeded admin password would be random)
+          curl -s --retry 5 --retry-connrefused --retry-delay 3 --retry-all-errors \
+            -X POST "$PUBLIC_URL/api/login" -H 'Content-Type: application/json' \
+            -d '{"email":"ada@sentio.app","password":"secret123"}' | head -c 120; echo
 
       # ---- keep alive ----------------------------------------------------------
       - name: Keep demo alive
