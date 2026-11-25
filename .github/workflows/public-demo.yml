@@ -1,0 +1,184 @@
+# Sentio public demo — one click runs the entire stack on a GH runner and
+# exposes it on the internet via a cloudflared quick tunnel.
+#
+#   Actions tab -> "Public demo" -> Run workflow
+#
+# The public URL + demo credentials are printed in the job summary.
+# Runs are ephemeral: up to ~6h (GitHub hard cap), fresh DB each run.
+# Free on a public repo.
+
+name: Public demo
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_alive_minutes:
+        description: "Keep the demo alive (minutes, max 350)"
+        required: false
+        default: "350"
+
+concurrency:
+  group: public-demo
+  cancel-in-progress: true
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show runner specs
+        run: |
+          echo "cores: $(nproc)  ram: $(free -g | awk '/^Mem:/{print $2}')GB"
+          echo "docker: $(docker --version)"
+
+      # ---- caches (first run ~12 min, later runs ~5 min) ---------------------
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: frontend/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Cache HuggingFace sentiment models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-sentio-${{ runner.os }}-v1
+
+      # ---- python env --------------------------------------------------------
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install python deps
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -r requirements.txt
+
+      # ---- frontend build ------------------------------------------------------
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci --cache .npm --prefer-offline
+          npm run build
+
+      # ---- infra: kafka + postgres --------------------------------------------
+      - name: Start kafka + postgres
+        run: |
+          docker compose up -d
+          for i in $(seq 1 90); do
+            K=$(docker inspect -f '{{.State.Health.Status}}' sma-kafka 2>/dev/null || echo none)
+            P=$(docker inspect -f '{{.State.Health.Status}}' sma-postgres 2>/dev/null || echo none)
+            [ "$K" = "healthy" ] && [ "$P" = "healthy" ] && break
+            sleep 2
+          done
+          docker ps --format '{{.Names}}: {{.Status}}'
+
+      - name: Seed users + topics
+        run: |
+          .venv/bin/python scripts/seed_demo_user.py
+          ADMIN_PASSWORD="${{ secrets.ADMIN_PASSWORD }}" .venv/bin/python scripts/seed_admin.py
+          docker exec sma-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
+            --create --topic comments-raw --partitions 3 --if-not-exists || true
+          docker exec sma-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
+            --create --topic comments-scored --partitions 3 --if-not-exists || true
+
+      # ---- data plane: spark + producer ---------------------------------------
+      - name: Start Spark streaming job
+        run: |
+          mkdir -p logs
+          # JDK 17 for Spark (runner has it on PATH; make sure JAVA_HOME points at it)
+          JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(which java)")")")"
+          echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+          nohup env JAVA_HOME="$JAVA_HOME" bash startup/linux/run_spark.sh > logs/spark.log 2>&1 &
+          sleep 5
+          tail -5 logs/spark.log || true
+
+      - name: Start producer (seed pass, then idle for Go-live bursts)
+        run: |
+          nohup .venv/bin/python producer/producer.py --file data/raw/all_sources.csv --seed 4000 --shuffle > logs/producer.log 2>&1 &
+
+      # ---- app: API + nginx edge ----------------------------------------------
+      - name: Start API + nginx
+        run: |
+          nohup .venv/bin/uvicorn api.main:app --host 0.0.0.0 --port 8000 > logs/api.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8000/health > /dev/null && break
+            sleep 2
+          done
+          curl -s http://localhost:8000/health
+          bash deploy/gen-certs.sh
+          docker compose -f deploy/docker-compose.prod.yml up -d --build nginx
+          sleep 3
+          curl -sk -o /dev/null -w "nginx https: %{http_code}\n" https://localhost/
+
+      # ---- public URL: cloudflared quick tunnel --------------------------------
+      - name: Start cloudflared tunnel
+        run: |
+          curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i /tmp/cloudflared.deb
+          nohup cloudflared tunnel --url https://localhost:443 --no-tls-verify --logfile logs/cloudflared.log > /dev/null 2>&1 &
+          for i in $(seq 1 30); do
+            URL=$(grep -oE "https://[a-z0-9-]+\.trycloudflare\.com" logs/cloudflared.log 2>/dev/null | head -1)
+            [ -n "$URL" ] && break
+            sleep 2
+          done
+          [ -n "$URL" ] || { echo "tunnel failed"; exit 1; }
+          echo "PUBLIC_URL=$URL" >> "$GITHUB_ENV"
+
+      # ---- verify + publish the demo URL --------------------------------------
+      - name: Verify demo end-to-end
+        run: |
+          echo "public URL: $PUBLIC_URL"
+          curl -s -o /dev/null -w "dashboard: %{http_code}\n" "$PUBLIC_URL/"
+          curl -s "$PUBLIC_URL/api/summary" | head -c 200; echo
+          curl -s -X POST "$PUBLIC_URL/api/login" -H 'Content-Type: application/json' \
+            -d '{"email":"admin@sentio.app","password":"'"${{ secrets.ADMIN_PASSWORD }}"'"}' | head -c 120; echo
+
+      - name: Write demo URL to job summary
+        run: |
+          {
+            echo "# 🟢 Sentio demo is LIVE"
+            echo
+            echo "**Public URL:** $PUBLIC_URL"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Admin login | \`admin@sentio.app\` |"
+            if [ -n "${{ secrets.ADMIN_PASSWORD }}" ]; then
+              echo "| Admin password | repo secret \`ADMIN_PASSWORD\` |"
+            else
+              echo "| Admin password | random — check the *Seed users + topics* step log |"
+            fi
+            echo "| Demo user | \`ada@sentio.app\` / \`secret123\` |"
+            echo
+            echo "Signup → pending → admin approves (Settings → User Management) → sign in."
+            echo
+            echo "This demo dies when the job ends (~${{ inputs.keep_alive_minutes || '350' }} min). Re-run for a new URL."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---- keep alive ----------------------------------------------------------
+      - name: Keep demo alive
+        timeout-minutes: 355
+        run: |
+          echo "demo stays up — cancel the job to end it early"
+          END=$((SECONDS + ${{ inputs.keep_alive_minutes || 350 }} * 60))
+          while [ $SECONDS -lt $END ]; do
+            sleep 60
+            curl -sf -o /dev/null http://localhost:8000/health || echo "health: api down"
+            curl -sf -o /dev/null "https://localhost/" -k || true
+          done
+          echo "keep-alive window over — demo ends"

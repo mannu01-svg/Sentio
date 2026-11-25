@@ -9,6 +9,7 @@ Idempotent: safe to run any time.
 """
 
 import hashlib
+import os
 import secrets
 import sys
 
@@ -40,10 +41,11 @@ def main() -> int:
         row = cur.fetchone()
         if row and row[0] == "approved":
             print("  ✓ admin account already present: admin@sentio.app")
-            conn.close()
             return 0
 
-        password = secrets.token_urlsafe(9)
+        # ADMIN_PASSWORD env override (CI demos: set once as a repo secret);
+        # default: random, printed once
+        password = os.getenv("ADMIN_PASSWORD") or secrets.token_urlsafe(9)
         cur.execute(
             "INSERT INTO users (email, name, password_hash, role, status) "
             "VALUES (%s, %s, %s, 'admin', 'approved') "
@@ -54,7 +56,10 @@ def main() -> int:
         if row is None:
             conn.commit()
             print("  ✓ admin account created: admin@sentio.app")
-            print(f"  ✓ admin password (save it now): {password}")
+            if os.getenv("ADMIN_PASSWORD"):
+                print("  ✓ admin password: from ADMIN_PASSWORD env")
+            else:
+                print(f"  ✓ admin password (save it now): {password}")
         else:
             # admin existed but was pending/rejected — re-approve, keep old password
             conn.commit()

@@ -78,6 +78,17 @@ Everything else (Python packages, npm packages, JDK, sentiment models, datasets)
 Prerequisites (system apps, can't be auto-installed): **Docker Desktop** (running),
 **Node.js 18+**, **Python 3.10–3.12**. Everything else is installed automatically.
 
+### No machine? Run the live demo from GitHub Actions
+
+The repo ships a **Public demo** workflow (`.github/workflows/public-demo.yml`) —
+it boots the entire stack (Kafka + Spark + PostgreSQL + API + nginx + cloudflared)
+on a GitHub runner and prints a **live public URL + demo credentials** in the job summary:
+
+> **Actions tab → "Public demo" → Run workflow** (~10 min to boot, live for up to ~6h)
+
+Runs are ephemeral (fresh DB each run, free on a public repo). Optional: set a repo
+secret `ADMIN_PASSWORD` for a known admin password on the demo.
+
 ### 1. Clone
 
 ```bash
