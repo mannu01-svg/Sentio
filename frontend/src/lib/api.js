@@ -28,6 +28,7 @@ function authHeaders() {
 
 async function get(path) {
   const res = await fetch(`${BASE}${path}`, { headers: authHeaders() })
+  if (res.status === 401) handleAuthExpired()
   if (!res.ok) throw new Error(`${path}: ${res.status}`)
   return res.json()
 }
@@ -38,8 +39,23 @@ async function post(path, body) {
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   })
+  if (res.status === 401) handleAuthExpired()
   if (!res.ok) throw new Error(`${path}: ${res.status}`)
   return res.json()
+}
+
+// a 401 means the stored session is dead (API restart/expiry) — drop it and
+// send the user to sign-in instead of hammering every call with a stale token
+function handleAuthExpired() {
+  try {
+    localStorage.removeItem("sentio-token")
+    localStorage.removeItem("sentio-user")
+  } catch {
+    /* localStorage unavailable — nothing to clear */
+  }
+  if (!window.location.pathname.startsWith("/login")) {
+    window.location.replace("/login")
+  }
 }
 
 // ---- data endpoints ----

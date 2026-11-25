@@ -163,21 +163,64 @@ def _make_token(email: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Token store + auth guards: real server-side session validation
+# Token store + auth guards: real server-side session validation.
+# Tokens are persisted in the api_tokens table so sessions SURVIVE API
+# restarts (in-memory dict is a first-level cache; DB is the source of truth).
 # ---------------------------------------------------------------------------
 
 TOKENS: dict[str, dict] = {}  # token -> {email, name, role, issued_at}
 TOKEN_TTL = 7 * 24 * 3600  # one week
 
 
+def _ensure_api_tokens_table():
+    """Idempotent migration: persistent session tokens (survive restarts)."""
+    try:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS api_tokens (
+                    token      TEXT PRIMARY KEY,
+                    email      TEXT NOT NULL,
+                    name       TEXT NOT NULL,
+                    role       TEXT NOT NULL,
+                    issued_at  DOUBLE PRECISION NOT NULL
+                )
+                """
+            )
+            cur.execute("DELETE FROM api_tokens WHERE issued_at < %s", (_time.time() - TOKEN_TTL,))
+            cur.execute("SELECT token, email, name, role, issued_at FROM api_tokens")
+            for row in cur.fetchall():
+                TOKENS[row["token"]] = {
+                    "email": row["email"],
+                    "name": row["name"],
+                    "role": row["role"],
+                    "issued_at": row["issued_at"],
+                }
+    except psycopg2.Error:
+        pass  # best-effort — validation still works via the in-memory store
+
+
+_ensure_api_tokens_table()
+
+
 def _issue_token(email: str, name: str, role: str) -> str:
     token = _make_token(email)
-    TOKENS[token] = {
+    session = {
         "email": email,
         "name": name,
         "role": role,
         "issued_at": _time.time(),
     }
+    TOKENS[token] = session
+    try:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO api_tokens (token, email, name, role, issued_at) VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (token) DO UPDATE SET email = EXCLUDED.email, role = EXCLUDED.role, issued_at = EXCLUDED.issued_at",
+                (token, email, name, role, session["issued_at"]),
+            )
+    except psycopg2.Error:
+        pass  # cache-only token: valid until the next restart
     return token
 
 
@@ -189,8 +232,13 @@ def _auth_token(request: Request) -> dict | None:
         session = TOKENS.get(token)
         if session and _time.time() - session["issued_at"] < TOKEN_TTL:
             return session
-        if session:  # expired — drop it
+        if session:  # expired — drop it everywhere
             TOKENS.pop(token, None)
+            try:
+                with db() as conn, conn.cursor() as cur:
+                    cur.execute("DELETE FROM api_tokens WHERE token = %s", (token,))
+            except psycopg2.Error:
+                pass
     return None
 
 
